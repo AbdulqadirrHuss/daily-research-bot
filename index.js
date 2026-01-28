@@ -8,56 +8,44 @@ puppeteer.use(StealthPlugin());
 // --- CONFIGURATION ---
 const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
 const MAX_FILES = parseInt(process.env.MAX_FILES) || 10;
-// MUST use absolute path for CDP to work
 const DOWNLOAD_DIR = path.resolve(__dirname, 'downloads');
 
 // Ensure folder exists
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 (async () => {
-    console.log("🤖 CDP-ENFORCED BOT ONLINE");
-    console.log(`📂 Writing files to: ${DOWNLOAD_DIR}`);
-
-    // TEST WRITE: Prove we can save files
-    fs.writeFileSync(path.join(DOWNLOAD_DIR, 'test_permission.txt'), 'If you see this, write permissions are GOOD.');
+    console.log("🤖 BUFFER-CAPTURE BOT ONLINE");
+    console.log(`📂 Saving to: ${DOWNLOAD_DIR}`);
+    
+    // Test write again just to be safe
+    fs.writeFileSync(path.join(DOWNLOAD_DIR, 'permission_check.txt'), 'OK');
 
     const browser = await puppeteer.launch({
-        headless: true, // v23+ standard
+        headless: true,
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
-            '--disable-features=IsolateOrigins,site-per-process'
+            '--disable-web-security' // Helps with CORS issues on downloads
         ]
     });
 
     const page = await browser.newPage();
     
-    // --- THE MAGIC FIX: FORCE DOWNLOAD PERMISSION ---
-    const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', {
-        behavior: 'allow',
-        downloadPath: DOWNLOAD_DIR,
-    });
-    console.log("   ✅ Download Behavior SET to: 'allow'");
+    // Set a real User Agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     for (const topic of TASKS) {
         console.log(`\n🚀 HUNTING: "${topic}"`);
         const topicDir = path.join(DOWNLOAD_DIR, topic.replace(/[^a-z0-9]/gi, '_'));
         if (!fs.existsSync(topicDir)) fs.mkdirSync(topicDir, { recursive: true });
 
-        // Update download path for this specific topic
-        await client.send('Page.setDownloadBehavior', {
-            behavior: 'allow',
-            downloadPath: topicDir,
-        });
-
         try {
-            // HTML DuckDuckGo (Easiest to scrape)
+            // HTML DuckDuckGo
             const q = encodeURIComponent(`${topic} filetype:pdf`);
             const url = `https://html.duckduckgo.com/html/?q=${q}`;
             
-            console.log(`   📡 Connecting...`);
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            console.log(`   📡 Scanning...`);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
             // Gather Links
             const pdfLinks = await page.evaluate(() => {
@@ -74,28 +62,44 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
             for (const link of uniqueLinks) {
                 if (count >= MAX_FILES) break;
                 
+                const filename = `doc_${count + 1}.pdf`;
+                const savePath = path.join(topicDir, filename);
+
                 try {
-                    console.log(`   ⬇️ Triggering: ${link.substring(0,40)}...`);
+                    console.log(`   ⬇️ Grabbing: ${link.substring(0,40)}...`);
                     
-                    // Trigger download by navigating to the file URL
-                    // We catch errors because Chrome might abort the "navigation" when the download starts
-                    try {
-                        await page.goto(link, { timeout: 10000, waitUntil: 'networkidle2' });
-                    } catch (e) {
-                        // This is expected! Chrome cancels "navigation" when it starts a download.
-                    }
+                    // --- THE FIX: DIRECT MEMORY CAPTURE ---
+                    // We open a new tab for the file so we don't lose our search results
+                    const filePage = await browser.newPage();
                     
-                    // WAIT for file to appear
-                    const gotFile = await waitForFile(topicDir, 10000); 
+                    // Go to the file URL
+                    const response = await filePage.goto(link, { 
+                        waitUntil: 'networkidle2', 
+                        timeout: 15000 
+                    });
+
+                    // Grab the raw data from Chrome's memory
+                    const buffer = await response.buffer();
                     
-                    if (gotFile) {
-                        console.log(`      ✅ Saved: ${gotFile}`);
+                    // Write it to disk immediately
+                    fs.writeFileSync(savePath, buffer);
+                    
+                    // Check if valid
+                    if (fs.statSync(savePath).size > 3000) {
+                        console.log(`      ✅ Captured (${Math.round(buffer.length/1024)} KB)`);
                         count++;
                     } else {
-                        console.log(`      ⚠️ Timeout (No file appeared)`);
+                        console.log(`      ⚠️ File too small (deleted)`);
+                        fs.unlinkSync(savePath);
                     }
+                    
+                    await filePage.close();
+
                 } catch (e) {
-                    console.log(`      ❌ Error: ${e.message}`);
+                    console.log(`      ❌ Failed: ${e.message}`);
+                    // Close the tab if it crashed
+                    const pages = await browser.pages();
+                    if (pages.length > 2) await pages[pages.length - 1].close();
                 }
             }
 
@@ -106,26 +110,10 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
     await browser.close();
     
-    // FINAL AUDIT
-    console.log("\n📦 FINAL STORAGE CHECK:");
+    // Final Audit
+    console.log("\n📦 FINAL INVENTORY:");
     printTree(DOWNLOAD_DIR);
-
 })();
-
-// Helper: Wait for a new file to appear in the folder
-async function waitForFile(dir, timeout) {
-    const start = Date.now();
-    const initialFiles = fs.readdirSync(dir);
-    
-    while (Date.now() - start < timeout) {
-        const currentFiles = fs.readdirSync(dir);
-        // Find the new file
-        const newFile = currentFiles.find(f => !initialFiles.includes(f) && !f.endsWith('.crdownload'));
-        if (newFile) return newFile;
-        await new Promise(r => setTimeout(r, 1000));
-    }
-    return null;
-}
 
 function printTree(dir) {
     try {
@@ -133,7 +121,6 @@ function printTree(dir) {
         files.forEach(file => {
              const fp = path.join(dir, file);
              if (fs.statSync(fp).isDirectory()) {
-                 console.log(`   DIR: ${file}`);
                  printTree(fp);
              } else {
                  console.log(`     - ${file} (${Math.round(fs.statSync(fp).size/1024)} KB)`);
