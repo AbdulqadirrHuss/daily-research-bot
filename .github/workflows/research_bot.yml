@@ -38,7 +38,7 @@ jobs:
         env:
           TASKS: ${{ inputs.research_tasks }}
           MAX_FILES: ${{ inputs.file_limit }}
-        run: node scraper.js
+        run: node index.js
 
       - name: DEBUG - List Files
         # This will show us in the logs exactly what is in the folder
