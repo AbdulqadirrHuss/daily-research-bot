@@ -4,46 +4,49 @@ on:
   workflow_dispatch:
     inputs:
       research_tasks:
-        description: 'Enter topics separated by semicolon (e.g. Topic A; Topic B)'
+        description: 'Topics'
         required: true
-        default: 'Renewable Energy 2024; AI in Healthcare'
+        default: 'Renewable Energy'
       file_limit:
-        description: 'How many files per topic?'
+        description: 'Files per topic'
         required: true
-        default: '10'
+        default: '5'
 
 permissions:
   contents: read
-  actions: write # Needed to save the Artifacts
+  actions: write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Runs for up to 6 hours
-
+    
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: Install Dependencies
+      - name: Install
         run: |
           npm install
           npx playwright install chromium
 
-      - name: Run The Bot
+      - name: Run Bot
         env:
           TASKS: ${{ inputs.research_tasks }}
           MAX_FILES: ${{ inputs.file_limit }}
         run: node scraper.js
 
-      - name: Upload Research Library
+      - name: DEBUG - List Files
+        # This will show us in the logs exactly what is in the folder
+        run: ls -R downloads/
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Research_Results
           path: downloads/
-          retention-days: 14
+          if-no-files-found: warn # Warn us, don't just fail silently
