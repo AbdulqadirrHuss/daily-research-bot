@@ -1,0 +1,8 @@
+{
+  "name": "research-bot",
+  "version": "1.0.0",
+  "main": "scraper.js",
+  "dependencies": {
+    "playwright": "^1.40.0"
+  }
+}
