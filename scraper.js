@@ -1,24 +1,27 @@
-// Use the 'extra' version of chromium to enable plugins
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
-chromium.use(stealth);
-
+const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
+// --- CONFIGURATION ---
 const RAW_TASKS = process.env.TASKS || "Renewable Energy";
 const TARGET_PER_TOPIC = parseInt(process.env.MAX_FILES) || 10;
 const BASE_DIR = path.join(__dirname, 'downloads');
 
+// Create the download folder immediately
 if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
 
 (async () => {
     const tasks = RAW_TASKS.split(';').map(t => t.trim()).filter(t => t.length > 0);
-    console.log(`\n🤖 STEALTH BOT ONLINE. Targets: [ ${tasks.join(' | ')} ]`);
-
-    const browser = await chromium.launch({ 
-        headless: true, // Stealth plugin handles the masking
+    console.log(`\n🤖 LITE-MODE BOT ONLINE`);
+    console.log(`🌍 Environment: GitHub Cloud (Datacenter IP)`);
+    
+    // Launch standard headless browser
+    const browser = await chromium.launch({ headless: true });
+    
+    // Use a very standard, "boring" Windows User Agent
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36'
     });
 
     for (const topic of tasks) {
@@ -27,62 +30,57 @@ if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
         const taskDir = path.join(BASE_DIR, safeName);
         if (!fs.existsSync(taskDir)) fs.mkdirSync(taskDir, { recursive: true });
 
-        const page = await browser.newPage();
-        
-        // 1. USE BING (Better for files, less aggressive CAPTCHA than Google)
-        // We append 'filetype:pdf' to force file results
-        const q = encodeURIComponent(`${topic} filetype:pdf`);
-        const url = `https://www.bing.com/search?q=${q}`;
-        
-        try {
-            console.log(`   🔎 Searching Bing...`);
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await page.waitForTimeout(2000); // Wait for human-like pause
+        const page = await context.newPage();
 
-            // 2. THE VACUUM (Grab ALL links, ignore layout)
-            // We do not look for "search results". We look for ANY link ending in .pdf
-            let pdfLinks = await page.evaluate(() => {
+        try {
+            // --- THE FIX: HTML-ONLY MODE ---
+            // This URL has NO javascript bot checks. It just works.
+            const q = encodeURIComponent(`${topic} filetype:pdf`);
+            const url = `https://html.duckduckgo.com/html/?q=${q}`;
+            
+            console.log(`   📡 Connecting to Lite Interface...`);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            
+            // Wait for 2 seconds to be polite
+            await page.waitForTimeout(2000);
+
+            // "Vacuum" Strategy: Grab ALL links ending in .pdf
+            const pdfLinks = await page.evaluate(() => {
                 return Array.from(document.querySelectorAll('a'))
                     .map(a => a.href)
-                    .filter(href => href.toLowerCase().endsWith('.pdf') || href.toLowerCase().includes('.pdf?'));
+                    .filter(href => href.toLowerCase().endsWith('.pdf'));
             });
 
-            console.log(`   🔗 Found ${pdfLinks.length} raw PDF links on page 1.`);
+            console.log(`   🔗 Found ${pdfLinks.length} PDF links.`);
 
-            // 3. DOWNLOAD
+            if (pdfLinks.length === 0) {
+                console.log("   ⚠️ Zero links found. The query might be too specific.");
+            }
+
+            // --- DOWNLOADER ---
             let count = 0;
-            // Remove duplicates
-            pdfLinks = [...new Set(pdfLinks)];
+            const uniqueLinks = [...new Set(pdfLinks)]; // Remove duplicates
 
-            for (const link of pdfLinks) {
+            for (const link of uniqueLinks) {
                 if (count >= TARGET_PER_TOPIC) break;
-                if (!link.startsWith('http')) continue;
-
+                
                 const filename = `doc_${count + 1}.pdf`;
                 const savePath = path.join(taskDir, filename);
                 
                 try {
-                    console.log(`   ⬇️ Downloading: ${link.substring(0, 40)}...`);
                     await downloadFile(link, savePath);
                     
-                    // Verify size (ignore empty files)
+                    // Verify the file isn't empty (redirects often fail to 0kb)
                     const stats = fs.statSync(savePath);
-                    if (stats.size > 2000) {
-                        console.log(`      ✅ Saved (${Math.round(stats.size/1024)}KB)`);
+                    if (stats.size > 3000) { // Must be larger than 3KB
+                        console.log(`   [${count+1}] ✅ Saved: ${link.substring(0, 40)}...`);
                         count++;
                     } else {
-                        fs.unlinkSync(savePath); // Delete empty junk
-                        console.log(`      ⚠️ Too small (Junk/Redirect)`);
+                        fs.unlinkSync(savePath); // Delete junk file
                     }
                 } catch (e) {
-                    // console.log("Failed: " + e.message);
+                    // Ignore download errors, just keep moving
                 }
-            }
-            
-            if (count === 0) {
-                console.log("   ⚠️ No valid PDFs downloaded. The search engine might have given only redirects.");
-                // Take a screenshot to debug ONLY if it fails
-                await page.screenshot({ path: path.join(BASE_DIR, `debug_fail_${safeName}.png`) });
             }
 
         } catch (err) {
@@ -94,33 +92,32 @@ if (!fs.existsSync(BASE_DIR)) fs.mkdirSync(BASE_DIR, { recursive: true });
 
     await browser.close();
     
-    // Final Audit
+    // Final Audit for logs
     console.log("\n📂 FILE AUDIT:");
     try {
-        const files = fs.readdirSync(BASE_DIR, { recursive: true });
-        console.log(files);
-    } catch (e) { console.log("   No files found."); }
+        const folders = fs.readdirSync(BASE_DIR);
+        for (const f of folders) {
+             const count = fs.readdirSync(path.join(BASE_DIR, f)).length;
+             console.log(`   - ${f}: ${count} files`);
+        }
+    } catch (e) {}
 })();
 
+// Helper: Simple Node.js Downloader
 function downloadFile(url, dest) {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(dest);
         const req = https.get(url, { 
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-            timeout: 10000 
-        }, (res) => {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 15000 
+        }, res => {
             if (res.statusCode === 200) {
                 res.pipe(file);
                 file.on('finish', () => file.close(resolve));
             } else {
-                fs.unlink(dest, () => {});
-                reject(new Error(res.statusCode));
+                file.close(); fs.unlink(dest, () => {}); resolve(); 
             }
         });
-        req.on('error', (e) => {
-            fs.unlink(dest, () => {});
-            reject(e);
-        });
-        req.end();
+        req.on('error', () => { file.close(); fs.unlink(dest, () => {}); resolve(); });
     });
 }
