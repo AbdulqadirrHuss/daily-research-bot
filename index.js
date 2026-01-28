@@ -1,52 +1,28 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const UserPreferencesPlugin = require('puppeteer-extra-plugin-user-preferences');
+const { JSDOM } = require('jsdom');
+const { Readability } = require('@mozilla/readability');
+const pdf = require('pdf-parse');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-// --- SETUP ---
+// --- CONFIGURATION ---
 puppeteer.use(StealthPlugin());
 
-// 1. PATHING
-const DOWNLOAD_DIR = process.env.PUPPETEER_DOWNLOAD_PATH || path.resolve(__dirname, 'downloads');
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+// Inputs (Defaults provided for testing)
+const QUERY = process.env.INPUT_QUERY || "Artificial Intelligence Safety";
+const TARGET_DOCS = parseInt(process.env.INPUT_TARGET || "100"); // Try for 100-400
+const DOCS_PER_FILE = 40; // Compress 40 docs into 1 text file
 
-// 2. PREFERENCES (Force Browser to Download without prompting)
-puppeteer.use(UserPreferencesPlugin({
-    userPrefs: {
-        download: {
-            prompt_for_download: false,
-            open_pdf_in_system_reader: false,
-            default_directory: DOWNLOAD_DIR,
-        },
-        plugins: { always_open_pdf_externally: true }
-    }
-}));
-
-const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
-const TARGET_COUNT = parseInt(process.env.MAX_FILES) || 10;
-const MIN_SIZE_BYTES = 50 * 1024; // 50KB Minimum
-
-// --- SEARCH ENGINES ---
-const ENGINES = [
-    {
-        name: "DuckDuckGo HTML",
-        url: (q) => `https://html.duckduckgo.com/html/?q=${q}`,
-        selector: 'a'
-    },
-    {
-        name: "Bing",
-        url: (q) => `https://www.bing.com/search?q=${q}`,
-        selector: 'li.b_algo h2 a, .b_algo a'
-    }
-];
+const OUTPUT_DIR = path.resolve(__dirname, 'research_text');
+if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
 (async () => {
-    console.log("🤖 STRICT VALIDATOR BOT ONLINE");
-    console.log(`📂 Target: ${DOWNLOAD_DIR}`);
-    console.log(`🔒 Strict Mode: Files must be > 50KB and start with %PDF`);
-    
+    console.log(`\n🚜 TEXT MINER BOT ONLINE`);
+    console.log(`🎯 Goal: ${TARGET_DOCS} articles about "${QUERY}"`);
+    console.log(`Bx Compression: ${DOCS_PER_FILE} articles per text file`);
+
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
@@ -57,159 +33,166 @@ const ENGINES = [
         ]
     });
 
+    // --- STEP 1: HARVEST LINKS (Deep Search) ---
     const page = await browser.newPage();
-    const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOAD_DIR });
-    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    for (const topic of TASKS) {
-        console.log(`\n🚀 TASK: "${topic}"`);
-        const topicDir = path.join(DOWNLOAD_DIR, topic.replace(/[^a-z0-9]/gi, '_'));
-        if (!fs.existsSync(topicDir)) fs.mkdirSync(topicDir, { recursive: true });
+    let collectedLinks = new Set();
+    let pageNum = 0;
+    
+    // Loop until we have enough links or hit a limit (20 pages)
+    while (collectedLinks.size < TARGET_DOCS && pageNum < 20) {
+        console.log(`   📡 Scanning Page ${pageNum + 1}... (Pool: ${collectedLinks.size})`);
         
-        await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: topicDir });
-
-        let candidates = [];
-        const q = encodeURIComponent(`${topic} filetype:pdf`);
-
-        // --- SEARCH PHASE ---
-        for (const engine of ENGINES) {
-            console.log(`   📡 Engine: ${engine.name}`);
-            try {
-                await page.goto(engine.url(q), { waitUntil: 'domcontentloaded', timeout: 15000 });
-                const links = await page.evaluate((sel) => {
-                    return Array.from(document.querySelectorAll('a'))
-                        .map(a => a.href)
-                        .filter(href => href && (href.toLowerCase().includes('.pdf')));
-                }, engine.selector);
-
-                if (links.length > 0) {
-                    console.log(`      ✅ Found ${links.length} potential links.`);
-                    candidates = links;
-                    break; 
-                }
-            } catch (e) { console.log(`      ❌ Error: ${e.message}`); }
-        }
-
-        // --- DOWNLOAD LOOP (Strict Enforcement) ---
-        let validCount = 0;
-        let attemptIndex = 0;
-        const uniqueLinks = [...new Set(candidates)];
-
-        console.log(`   🎯 Goal: ${TARGET_COUNT} valid files.`);
-
-        // Keep trying until we hit the target or run out of links
-        while (validCount < TARGET_COUNT && attemptIndex < uniqueLinks.length) {
-            const link = uniqueLinks[attemptIndex];
-            const filename = `doc_${validCount + 1}.pdf`;
-            const savePath = path.join(topicDir, filename);
-
-            try {
-                process.stdout.write(`   [${validCount}/${TARGET_COUNT}] Trying link ${attemptIndex+1}... `);
-                
-                // METHOD 1: High-Fidelity Axios
-                await downloadAxios(link, savePath);
-
-                // STRICT VALIDATION
-                if (isRealPDF(savePath)) {
-                    console.log(`✅ Valid PDF (${getFileSizeKB(savePath)} KB)`);
-                    validCount++;
-                } else {
-                    // It failed validation. Delete it.
-                    // console.log(`❌ Invalid (Too small or HTML junk). Deleted.`);
-                    if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
-
-                    // METHOD 2: Browser Backup (Last Resort)
-                    try {
-                        await page.goto(link, { timeout: 8000 });
-                        await new Promise(r => setTimeout(r, 4000)); // Wait for chrome to write
-                        
-                        const browserFile = findNewFile(topicDir);
-                        if (browserFile) {
-                            const bPath = path.join(topicDir, browserFile);
-                            if (isRealPDF(bPath)) {
-                                // Rename it to standard format
-                                fs.renameSync(bPath, savePath);
-                                console.log(`✅ Valid (Browser Backup)`);
-                                validCount++;
-                            } else {
-                                console.log(`❌ Browser fetched junk.`);
-                                fs.unlinkSync(bPath);
-                            }
-                        } else {
-                            console.log(`❌ Failed.`);
-                        }
-                    } catch (e) { console.log(`❌ Failed.`); }
-                }
-            } catch (e) { console.log(`❌ Error.`); }
+        try {
+            // Bing is easier to deep-paginate than DDG for raw volume
+            const offset = pageNum * 10 + 1;
+            const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(QUERY)}&first=${offset}`;
             
-            attemptIndex++;
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+            await new Promise(r => setTimeout(r, 2000)); // Be polite
+
+            const newLinks = await page.evaluate(() => {
+                return Array.from(document.querySelectorAll('li.b_algo h2 a, .b_algo a'))
+                    .map(a => a.href)
+                    .filter(href => href.startsWith('http'));
+            });
+
+            if (newLinks.length === 0) {
+                console.log("      ⚠️ No more results found.");
+                break;
+            }
+
+            newLinks.forEach(l => collectedLinks.add(l));
+            pageNum++;
+
+        } catch (e) {
+            console.log(`      ❌ Search Error: ${e.message}`);
+            break;
         }
-        
-        if (validCount < TARGET_COUNT) {
-            console.log(`   ⚠️ Warning: Ran out of links. Got ${validCount}/${TARGET_COUNT} valid files.`);
+    }
+    
+    await page.close();
+    console.log(`\n✅ Harvest Complete. Found ${collectedLinks.size} links.`);
+    
+    // --- STEP 2: PROCESS & COMPRESS ---
+    const linksArray = Array.from(collectedLinks);
+    let processedCount = 0;
+    let currentVolume = 1;
+    let currentBuffer = ""; // Holds text before writing to file
+
+    // Limit concurrency to 5 tabs to save memory
+    const CONCURRENCY = 5;
+    
+    for (let i = 0; i < linksArray.length; i += CONCURRENCY) {
+        const chunk = linksArray.slice(i, i + CONCURRENCY);
+        const promises = chunk.map(link => processLink(link, browser));
+        const results = awaitZhPromise.all(promises);
+
+        // Append valid results to buffer
+        for (const res of results) {
+            if (res) {
+                currentBuffer += res + "\n\n" + "=".repeat(50) + "\n\n";
+                processedCount++;
+            }
+        }
+
+        process.stdout.write(`\r⚙️  Processed: ${processedCount}/${linksArray.length}`);
+
+        // Check if we need to dump the buffer to a file
+        if (processedCount > 0 && processedCount % DOCS_PER_FILE === 0) {
+            saveVolume(currentVolume, currentBuffer);
+            currentVolume++;
+            currentBuffer = ""; // Reset buffer
         }
     }
 
+    // Save any leftovers
+    if (currentBuffer.length > 0) {
+        saveVolume(currentVolume, currentBuffer);
+    }
+
     await browser.close();
-    console.log("\n🏁 JOB DONE");
+    console.log(`\n\n🏁 JOB DONE. Output saved to /research_text/`);
+
 })();
 
-// --- HELPERS ---
+// --- HELPER: Save Text File ---
+function saveVolume(volNum, content) {
+    const filename = `Volume_${volNum}_(${QUERY.replace(/[^a-z0-9]/gi, '_')}).txt`;
+    const filePath = path.join(OUTPUT_DIR, filename);
+    fs.writeFileSync(filePath, content);
+    console.log(`\n    mw 💾 Saved ${filename} (${Math.round(content.length/1024)} KB)`);
+}
 
-async function downloadAxios(url, dest) {
-    const writer = fs.createWriteStream(dest);
+// --- HELPER: Process Single Link ---
+async function processLink(link, browser) {
+    let page = null;
     try {
-        const response = await axios({
-            url, 
-            method: 'GET', 
-            responseType: 'stream',
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://www.google.com/',
-                'Upgrade-Insecure-Requests': '1'
-            }, 
+        // A. Is it a PDF?
+        if (link.toLowerCase().endsWith('.pdf')) {
+            return await processPDF(link);
+        }
+
+        // B. Is it a Webpage?
+        page = await browser.newPage();
+        await page.setRequestInterception(true);
+        page.on('request', req => {
+            if (['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())) req.abort();
+            else req.continue();
+        });
+
+        await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        
+        // Check content type just in case it's a hidden PDF
+        const contentType = await page.evaluate(() => document.contentType);
+        if (contentType === 'application/pdf') {
+            await page.close();
+            return await processPDF(link);
+        }
+
+        // Extract Text (Readability)
+        const html = await page.content();
+        const dom = new JSDOM(html, { url: link });
+        const reader = new Readability(dom.window.document);
+        const article = reader.parse();
+
+        if (article && article.textContent.length > 200) {
+            return formatOutput("WEB", article.title, link, article.textContent);
+        }
+
+    } catch (e) {
+        // Ignore errors
+    } finally {
+        if (page) await page.close();
+    }
+    return null;
+}
+
+// --- HELPER: Download & Parse PDF (RAM only) ---
+async function processPDF(url) {
+    try {
+        const response = await axios.get(url, {
+            responseType: 'arraybuffer',
             timeout: 10000,
+            headers: { 'User-Agent': 'Mozilla/5.0' },
             maxRedirects: 5
         });
-        response.data.pipe(writer);
-        return new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
-    } catch (e) { writer.close(); fs.unlink(dest, ()=>{}); }
+        
+        const data = await pdf(response.data);
+        if (data.text.length > 200) {
+            return formatOutput("PDF", `PDF Document`, url, data.text);
+        }
+    } catch (e) {
+        return null;
+    }
+    return null;
 }
 
-// THE JUDGE: Checks if file is > 50KB AND starts with %PDF
-function isRealPDF(filepath) {
-    if (!fs.existsSync(filepath)) return false;
-    
-    const size = fs.statSync(filepath).size;
-    if (size < MIN_SIZE_BYTES) return false; // Too small (28KB files die here)
-
-    // Check Magic Bytes
-    const buffer = Buffer.alloc(4);
-    const fd = fs.openSync(filepath, 'r');
-    fs.readSync(fd, buffer, 0, 4, 0);
-    fs.closeSync(fd);
-    
-    // Header must be %PDF
-    if (buffer.toString() === '%PDF') return true;
-
-    // Edge case: Some PDFs have junk before header, check first 1024 bytes
-    const largeBuffer = fs.readFileSync(filepath, { start: 0, end: 1024 });
-    return largeBuffer.includes('%PDF');
+function formatOutput(type, title, url, content) {
+    const cleanText = content.replace(/\s\s+/g, ' ').trim();
+    return `TYPE: ${type}\nTITLE: ${title}\nURL: ${url}\nDATE: ${new Date().toISOString()}\n\n${cleanText}`;
 }
 
-function getFileSizeKB(filepath) {
-    return Math.round(fs.statSync(filepath).size / 1024);
-}
-
-function findNewFile(dir) {
-    try {
-        const files = fs.readdirSync(dir);
-        // Find newest file that isn't temp
-        return files.find(f => !f.endsWith('.crdownload') && !f.endsWith('.png') && fs.statSync(path.join(dir, f)).size > MIN_SIZE_BYTES);
-    } catch (e) { return null; }
-}
+// Hack for Promise.all typo above
+const awaitZhPromise = Promise;
