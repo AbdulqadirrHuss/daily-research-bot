@@ -1,6 +1,6 @@
 {
   "name": "research-bot",
-  "version": "12.0.0",
+  "version": "13.0.0",
   "main": "index.js",
   "dependencies": {
     "puppeteer": "^23.0.0",
