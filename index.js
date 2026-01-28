@@ -2,40 +2,62 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
 
 puppeteer.use(StealthPlugin());
 
 // --- CONFIGURATION ---
 const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
 const MAX_FILES = parseInt(process.env.MAX_FILES) || 10;
+// MUST use absolute path for CDP to work
 const DOWNLOAD_DIR = path.resolve(__dirname, 'downloads');
 
 // Ensure folder exists
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 (async () => {
-    console.log("🤖 SESSION-HIJACK BOT ONLINE");
-    
+    console.log("🤖 CDP-ENFORCED BOT ONLINE");
+    console.log(`📂 Writing files to: ${DOWNLOAD_DIR}`);
+
+    // TEST WRITE: Prove we can save files
+    fs.writeFileSync(path.join(DOWNLOAD_DIR, 'test_permission.txt'), 'If you see this, write permissions are GOOD.');
+
     const browser = await puppeteer.launch({
-        headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        headless: true, // v23+ standard
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-features=IsolateOrigins,site-per-process'
+        ]
     });
 
     const page = await browser.newPage();
     
-    // 1. Establish a Human Identity
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // --- THE MAGIC FIX: FORCE DOWNLOAD PERMISSION ---
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
+        behavior: 'allow',
+        downloadPath: DOWNLOAD_DIR,
+    });
+    console.log("   ✅ Download Behavior SET to: 'allow'");
 
     for (const topic of TASKS) {
         console.log(`\n🚀 HUNTING: "${topic}"`);
         const topicDir = path.join(DOWNLOAD_DIR, topic.replace(/[^a-z0-9]/gi, '_'));
         if (!fs.existsSync(topicDir)) fs.mkdirSync(topicDir, { recursive: true });
 
+        // Update download path for this specific topic
+        await client.send('Page.setDownloadBehavior', {
+            behavior: 'allow',
+            downloadPath: topicDir,
+        });
+
         try {
-            // Use HTML DuckDuckGo (Least resistance)
+            // HTML DuckDuckGo (Easiest to scrape)
             const q = encodeURIComponent(`${topic} filetype:pdf`);
-            await page.goto(`https://html.duckduckgo.com/html/?q=${q}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            const url = `https://html.duckduckgo.com/html/?q=${q}`;
+            
+            console.log(`   📡 Connecting...`);
+            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
             // Gather Links
             const pdfLinks = await page.evaluate(() => {
@@ -46,40 +68,35 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
             console.log(`   🔗 Found ${pdfLinks.length} candidates.`);
 
-            // 2. THE HIJACK: Get the "Passport" (Cookies + UA)
-            const cookies = await page.cookies();
-            const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-            const userAgent = await page.evaluate(() => navigator.userAgent);
-
-            // 3. DOWNLOAD WITH PASSPORT
             let count = 0;
             const uniqueLinks = [...new Set(pdfLinks)];
 
             for (const link of uniqueLinks) {
                 if (count >= MAX_FILES) break;
                 
-                const filename = `doc_${count + 1}.pdf`;
-                const savePath = path.join(topicDir, filename);
-                
                 try {
-                    console.log(`   ⬇️ Downloading: ${filename}...`);
+                    console.log(`   ⬇️ Triggering: ${link.substring(0,40)}...`);
                     
-                    // Pass the browser's credentials to Axios
-                    await downloadWithCookies(link, savePath, cookieString, userAgent);
+                    // Trigger download by navigating to the file URL
+                    // We catch errors because Chrome might abort the "navigation" when the download starts
+                    try {
+                        await page.goto(link, { timeout: 10000, waitUntil: 'networkidle2' });
+                    } catch (e) {
+                        // This is expected! Chrome cancels "navigation" when it starts a download.
+                    }
                     
-                    // 4. VERIFY IT IS A REAL PDF
-                    if (isValidPDF(savePath)) {
-                        console.log(`      ✅ Verified PDF`);
+                    // WAIT for file to appear
+                    const gotFile = await waitForFile(topicDir, 10000); 
+                    
+                    if (gotFile) {
+                        console.log(`      ✅ Saved: ${gotFile}`);
                         count++;
                     } else {
-                        console.log(`      ⚠️ Invalid File (Deleted)`);
-                        fs.unlinkSync(savePath);
+                        console.log(`      ⚠️ Timeout (No file appeared)`);
                     }
                 } catch (e) {
                     console.log(`      ❌ Error: ${e.message}`);
                 }
-                
-                await new Promise(r => setTimeout(r, 1000)); // Be polite
             }
 
         } catch (err) {
@@ -89,46 +106,25 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
     await browser.close();
     
-    // DEBUG: Print file tree
-    console.log("\n📦 STORAGE CHECK:");
+    // FINAL AUDIT
+    console.log("\n📦 FINAL STORAGE CHECK:");
     printTree(DOWNLOAD_DIR);
 
 })();
 
-async function downloadWithCookies(url, dest, cookieString, userAgent) {
-    const writer = fs.createWriteStream(dest);
+// Helper: Wait for a new file to appear in the folder
+async function waitForFile(dir, timeout) {
+    const start = Date.now();
+    const initialFiles = fs.readdirSync(dir);
     
-    const response = await axios({
-        url,
-        method: 'GET',
-        responseType: 'stream',
-        headers: {
-            'User-Agent': userAgent,
-            'Cookie': cookieString, // <--- THE KEY FIX
-            'Referer': 'https://html.duckduckgo.com/'
-        },
-        timeout: 20000
-    });
-
-    response.data.pipe(writer);
-
-    return new Promise((resolve, reject) => {
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-    });
-}
-
-// Check first 4 bytes for "%PDF" signature
-function isValidPDF(filepath) {
-    try {
-        const buffer = Buffer.alloc(4);
-        const fd = fs.openSync(filepath, 'r');
-        fs.readSync(fd, buffer, 0, 4, 0);
-        fs.closeSync(fd);
-        return buffer.toString() === '%PDF';
-    } catch (e) {
-        return false;
+    while (Date.now() - start < timeout) {
+        const currentFiles = fs.readdirSync(dir);
+        // Find the new file
+        const newFile = currentFiles.find(f => !initialFiles.includes(f) && !f.endsWith('.crdownload'));
+        if (newFile) return newFile;
+        await new Promise(r => setTimeout(r, 1000));
     }
+    return null;
 }
 
 function printTree(dir) {
@@ -140,8 +136,7 @@ function printTree(dir) {
                  console.log(`   DIR: ${file}`);
                  printTree(fp);
              } else {
-                 const size = Math.round(fs.statSync(fp).size / 1024);
-                 console.log(`     - ${file} (${size} KB)`);
+                 console.log(`     - ${file} (${Math.round(fs.statSync(fp).size/1024)} KB)`);
              }
         });
     } catch(e) {}
