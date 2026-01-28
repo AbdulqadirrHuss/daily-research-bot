@@ -12,7 +12,7 @@ puppeteer.use(StealthPlugin());
 const DOWNLOAD_DIR = process.env.PUPPETEER_DOWNLOAD_PATH || path.resolve(__dirname, 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
-// 2. PREFERENCES (Force Browser to Download)
+// 2. PREFERENCES (Force Browser to Download without prompting)
 puppeteer.use(UserPreferencesPlugin({
     userPrefs: {
         download: {
@@ -42,7 +42,7 @@ const ENGINES = [
 ];
 
 (async () => {
-    console.log("🤖 HIGH-FIDELITY BOT ONLINE");
+    console.log("🤖 ANTI-REJECTION BOT ONLINE");
     console.log(`📂 Target: ${DOWNLOAD_DIR}`);
     
     const browser = await puppeteer.launch({
@@ -118,8 +118,7 @@ const ENGINES = [
                     if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
                 }
 
-                // METHOD 2: Browser Backup
-                // If Axios failed (0KB), use the browser to navigate
+                // METHOD 2: Browser Backup (If Axios was blocked)
                 try {
                     console.log(`      ⚠️ Retrying with Browser...`);
                     await page.goto(link, { timeout: 8000 });
@@ -174,16 +173,15 @@ async function downloadAxios(url, dest) {
     });
 }
 
+// Validity Check: Is file > 5KB?
 function isValidFile(path) {
-    // A valid PDF is almost always larger than 5KB (5000 bytes)
-    // 0KB files will fail this check
     return fs.existsSync(path) && fs.statSync(path).size > 5000;
 }
 
 function findNewFile(dir) {
     try {
         const files = fs.readdirSync(dir);
-        // Find files that are NOT temporary (.crdownload) and NOT images
+        // Find files that are NOT temporary and > 5KB
         return files.find(f => !f.endsWith('.crdownload') && !f.endsWith('.png') && fs.statSync(path.join(dir, f)).size > 5000);
     } catch (e) { return null; }
 }
