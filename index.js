@@ -8,11 +8,11 @@ const axios = require('axios');
 // --- SETUP ---
 puppeteer.use(StealthPlugin());
 
-// 1. PATHING: Use the path passed from GitHub Actions, or default to local
+// 1. PATHING
 const DOWNLOAD_DIR = process.env.PUPPETEER_DOWNLOAD_PATH || path.resolve(__dirname, 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
-// 2. PREFERENCES: Force "Save" behavior
+// 2. PREFERENCES (Force Browser to Download)
 puppeteer.use(UserPreferencesPlugin({
     userPrefs: {
         download: {
@@ -27,7 +27,7 @@ puppeteer.use(UserPreferencesPlugin({
 const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
 const MAX_FILES = parseInt(process.env.MAX_FILES) || 10;
 
-// --- SEARCH ENGINES SWARM ---
+// --- SEARCH ENGINES ---
 const ENGINES = [
     {
         name: "DuckDuckGo HTML",
@@ -38,38 +38,28 @@ const ENGINES = [
         name: "Bing",
         url: (q) => `https://www.bing.com/search?q=${q}`,
         selector: 'li.b_algo h2 a, .b_algo a'
-    },
-    {
-        name: "Yahoo",
-        url: (q) => `https://search.yahoo.com/search?p=${q}`,
-        selector: 'h3.title a'
     }
 ];
 
 (async () => {
-    console.log("🤖 ARMOR-PLATED BOT ONLINE");
-    console.log(`📂 Target Folder: ${DOWNLOAD_DIR}`);
+    console.log("🤖 HIGH-FIDELITY BOT ONLINE");
+    console.log(`📂 Target: ${DOWNLOAD_DIR}`);
     
-    // Launch with system-safe args
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
-            '--disable-dev-shm-usage', // Fix for Docker/CI memory issues
+            '--disable-dev-shm-usage',
             '--disable-features=IsolateOrigins,site-per-process'
         ]
     });
 
     const page = await browser.newPage();
-    
-    // 3. CDP SESSION: The Ultimate Override
     const client = await page.target().createCDPSession();
-    await client.send('Page.setDownloadBehavior', { 
-        behavior: 'allow', 
-        downloadPath: DOWNLOAD_DIR 
-    });
+    await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOAD_DIR });
     
+    // Mimic a standard Windows 10 Chrome user
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     for (const topic of TASKS) {
@@ -77,19 +67,16 @@ const ENGINES = [
         const topicDir = path.join(DOWNLOAD_DIR, topic.replace(/[^a-z0-9]/gi, '_'));
         if (!fs.existsSync(topicDir)) fs.mkdirSync(topicDir, { recursive: true });
         
-        // Re-apply CDP for subfolder
         await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: topicDir });
 
         let candidates = [];
         const q = encodeURIComponent(`${topic} filetype:pdf`);
 
-        // --- ENGINE LOOP ---
+        // --- SEARCH PHASE ---
         for (const engine of ENGINES) {
             console.log(`   📡 Engine: ${engine.name}`);
             try {
                 await page.goto(engine.url(q), { waitUntil: 'domcontentloaded', timeout: 15000 });
-                
-                // Extract Links
                 const links = await page.evaluate((sel) => {
                     return Array.from(document.querySelectorAll('a'))
                         .map(a => a.href)
@@ -97,20 +84,14 @@ const ENGINES = [
                 }, engine.selector);
 
                 if (links.length > 0) {
-                    console.log(`      ✅ Found ${links.length} results.`);
+                    console.log(`      ✅ Found ${links.length} links.`);
                     candidates = links;
                     break; 
                 }
             } catch (e) { console.log(`      ❌ Error: ${e.message}`); }
         }
 
-        if (candidates.length === 0) {
-            console.log("   ⚠️ All engines failed. Taking debug snapshot.");
-            await page.screenshot({ path: path.join(topicDir, 'debug_fail.png') });
-            continue;
-        }
-
-        // --- DOWNLOADER ---
+        // --- DOWNLOAD PHASE ---
         let count = 0;
         const uniqueLinks = [...new Set(candidates)];
 
@@ -121,24 +102,39 @@ const ENGINES = [
 
             try {
                 console.log(`   ⬇️ Fetching: ${link.substring(0,40)}...`);
-                // Use Axios for 100% reliability in CI
-                await downloadAxios(link, savePath);
                 
-                if (fs.existsSync(savePath) && fs.statSync(savePath).size > 3000) {
-                    console.log(`      ✅ Saved`);
-                    count++;
-                } else {
-                    // Try Browser Navigation as Backup
-                    try {
-                        await page.goto(link, { timeout: 5000 });
-                        await new Promise(r => setTimeout(r, 2000)); // Wait for implicit download
-                        const found = findNewFile(topicDir);
-                        if (found) count++;
-                    } catch (e) {}
+                // METHOD 1: High-Fidelity Axios (The Fix for 0KB)
+                try {
+                    await downloadAxios(link, savePath);
+                    if (isValidFile(savePath)) {
+                        console.log(`      ✅ Saved (High-Fi)`);
+                        count++;
+                        continue;
+                    } else {
+                        // Garbage Collection: Delete the 0KB failure
+                        if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
+                    }
+                } catch (e) {
+                    if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
                 }
-            } catch (e) {
-                // console.log(`      ❌ Skip: ${e.message}`);
-            }
+
+                // METHOD 2: Browser Backup
+                // If Axios failed (0KB), use the browser to navigate
+                try {
+                    console.log(`      ⚠️ Retrying with Browser...`);
+                    await page.goto(link, { timeout: 8000 });
+                    // Wait 3s for Chrome to write the file
+                    await new Promise(r => setTimeout(r, 3000));
+                    
+                    // Check if a new file appeared
+                    const found = findNewFile(topicDir);
+                    if (found) {
+                        console.log(`      ✅ Saved (Browser): ${found}`);
+                        count++;
+                    }
+                } catch (e) {}
+
+            } catch (e) { }
         }
     }
 
@@ -146,22 +142,48 @@ const ENGINES = [
     console.log("\n🏁 JOB DONE");
 })();
 
+// --- THE FIX: FAKE BROWSER HEADERS ---
 async function downloadAxios(url, dest) {
     const writer = fs.createWriteStream(dest);
     const response = await axios({
-        url, method: 'GET', responseType: 'stream',
-        headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000
+        url, 
+        method: 'GET', 
+        responseType: 'stream',
+        headers: { 
+            // This block makes the server think we are a real human
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': 'https://www.google.com/',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'cross-site'
+        }, 
+        timeout: 10000,
+        maxRedirects: 5
     });
+
     response.data.pipe(writer);
+
     return new Promise((resolve, reject) => {
         writer.on('finish', resolve);
         writer.on('error', reject);
     });
 }
 
+function isValidFile(path) {
+    // A valid PDF is almost always larger than 5KB (5000 bytes)
+    // 0KB files will fail this check
+    return fs.existsSync(path) && fs.statSync(path).size > 5000;
+}
+
 function findNewFile(dir) {
     try {
         const files = fs.readdirSync(dir);
-        return files.find(f => !f.endsWith('.crdownload') && !f.endsWith('.png'));
+        // Find files that are NOT temporary (.crdownload) and NOT images
+        return files.find(f => !f.endsWith('.crdownload') && !f.endsWith('.png') && fs.statSync(path.join(dir, f)).size > 5000);
     } catch (e) { return null; }
 }
