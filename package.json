@@ -1,10 +1,11 @@
 {
-  "name": "puppeteer-research-bot",
-  "version": "1.0.0",
+  "name": "research-bot",
+  "version": "4.0.0",
   "main": "index.js",
   "dependencies": {
-    "puppeteer": "^19.0.0",
+    "puppeteer": "^23.0.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "axios": "^1.6.0"
   }
 }
