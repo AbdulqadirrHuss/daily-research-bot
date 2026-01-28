@@ -5,11 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-// 1. SETUP PLUGINS
+// 1. SETUP PLUGINS (The Fix: Use the variables we just defined)
 puppeteer.use(StealthPlugin());
 
-// --- YOUR REQUESTED FIX #2: DISABLE PDF VIEWER ---
-// This forces Chrome to treat PDFs as files, not web pages.
 puppeteer.use(UserPreferencesPlugin({
     userPrefs: {
         download: {
@@ -18,7 +16,7 @@ puppeteer.use(UserPreferencesPlugin({
             default_directory: path.resolve(__dirname, 'downloads'),
         },
         plugins: {
-            always_open_pdf_externally: true // <--- THE KEY FIX
+            always_open_pdf_externally: true
         }
     }
 }));
@@ -26,14 +24,13 @@ puppeteer.use(UserPreferencesPlugin({
 // --- CONFIGURATION ---
 const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
 const MAX_FILES = parseInt(process.env.MAX_FILES) || 10;
-// --- YOUR REQUESTED FIX #1: ABSOLUTE PATH ---
-const DOWNLOAD_DIR = path.resolve(__dirname, 'downloads'); 
+const DOWNLOAD_DIR = path.resolve(__dirname, 'downloads');
 
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 (async () => {
-    console.log("🤖 BROWSER-NATIVE BOT ONLINE");
-    console.log(`📂 Absolute Path: ${DOWNLOAD_DIR}`);
+    console.log("🤖 FINAL BOT ONLINE");
+    console.log(`📂 Saving to: ${DOWNLOAD_DIR}`);
     
     const browser = await puppeteer.launch({
         headless: "new", 
@@ -46,20 +43,17 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
     const page = await browser.newPage();
 
-    // --- YOUR REQUESTED FIX #1: CDP SESSION ---
-    // This tells the browser engine EXACTLY where to put files
+    // CDP Session (Fix for Cloud Downloads)
     const client = await page.target().createCDPSession();
     await client.send('Page.setDownloadBehavior', {
         behavior: 'allow',
-        downloadPath: DOWNLOAD_DIR, // Must be absolute
+        downloadPath: DOWNLOAD_DIR,
     });
-    console.log("   ✅ CDP Download Behavior Configured");
 
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     for (const topic of TASKS) {
         console.log(`\n🚀 HUNTING: "${topic}"`);
-        // Update CDP path for this specific topic folder
         const topicDir = path.join(DOWNLOAD_DIR, topic.replace(/[^a-z0-9]/gi, '_'));
         if (!fs.existsSync(topicDir)) fs.mkdirSync(topicDir, { recursive: true });
         
@@ -69,12 +63,10 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         });
 
         try {
-            // HTML DuckDuckGo
             const q = encodeURIComponent(`${topic} filetype:pdf`);
             const url = `https://html.duckduckgo.com/html/?q=${q}`;
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-            // Extract Links
             const pdfLinks = await page.evaluate(() => {
                 return Array.from(document.querySelectorAll('a'))
                     .map(a => a.href)
@@ -92,25 +84,20 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
                 try {
                     console.log(`   ⬇️ Processing: ${link.substring(0,40)}...`);
                     
-                    // METHOD A: BROWSER DOWNLOAD (Using your fixes)
-                    // We trigger a "navigation" to the file. 
-                    // Because 'always_open_pdf_externally' is TRUE, this should force a download.
+                    // Try Browser Download
                     try {
                         await page.goto(link, { timeout: 5000, waitUntil: 'networkidle2' });
-                    } catch (e) {
-                        // Chrome cancels navigation when download starts. This is GOOD.
-                    }
+                    } catch (e) {}
 
-                    // Wait for file to appear
-                    const savedFile = await waitForFile(topicDir, 5000);
+                    // Wait for file
+                    const savedFile = await waitForFile(topicDir, 4000);
                     
                     if (savedFile) {
                         console.log(`      ✅ Saved (Browser): ${savedFile}`);
                         count++;
                     } else {
-                        // METHOD B: FALLBACK (Axios)
-                        // If Browser fails (some sites block headless downloads), use Axios
-                        console.log(`      ⚠️ Browser download skipped. Retrying with Axios...`);
+                        // Fallback to Axios
+                        console.log(`      ⚠️ Browser skipped. Retrying with Axios...`);
                         const filename = `fallback_${count}.pdf`;
                         await downloadAxios(link, path.join(topicDir, filename));
                         console.log(`      ✅ Saved (Axios)`);
@@ -133,20 +120,20 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
     printTree(DOWNLOAD_DIR);
 })();
 
-// Helper: Wait for file
 async function waitForFile(dir, timeout) {
     const start = Date.now();
-    const initialFiles = fs.readdirSync(dir);
-    while (Date.now() - start < timeout) {
-        const currentFiles = fs.readdirSync(dir);
-        const newFile = currentFiles.find(f => !initialFiles.includes(f) && !f.endsWith('.crdownload'));
-        if (newFile) return newFile;
-        await new Promise(r => setTimeout(r, 500));
-    }
+    try {
+        const initialFiles = fs.readdirSync(dir);
+        while (Date.now() - start < timeout) {
+            const currentFiles = fs.readdirSync(dir);
+            const newFile = currentFiles.find(f => !initialFiles.includes(f) && !f.endsWith('.crdownload'));
+            if (newFile) return newFile;
+            await new Promise(r => setTimeout(r, 500));
+        }
+    } catch (e) {}
     return null;
 }
 
-// Helper: Axios Fallback
 async function downloadAxios(url, dest) {
     const writer = fs.createWriteStream(dest);
     const response = await axios({
