@@ -25,7 +25,8 @@ puppeteer.use(UserPreferencesPlugin({
 }));
 
 const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
-const MAX_FILES = parseInt(process.env.MAX_FILES) || 10;
+const TARGET_COUNT = parseInt(process.env.MAX_FILES) || 10;
+const MIN_SIZE_BYTES = 50 * 1024; // 50KB Minimum
 
 // --- SEARCH ENGINES ---
 const ENGINES = [
@@ -42,8 +43,9 @@ const ENGINES = [
 ];
 
 (async () => {
-    console.log("🤖 ANTI-REJECTION BOT ONLINE");
+    console.log("🤖 STRICT VALIDATOR BOT ONLINE");
     console.log(`📂 Target: ${DOWNLOAD_DIR}`);
+    console.log(`🔒 Strict Mode: Files must be > 50KB and start with %PDF`);
     
     const browser = await puppeteer.launch({
         headless: "new",
@@ -59,7 +61,6 @@ const ENGINES = [
     const client = await page.target().createCDPSession();
     await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOAD_DIR });
     
-    // Mimic a standard Windows 10 Chrome user
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     for (const topic of TASKS) {
@@ -84,56 +85,70 @@ const ENGINES = [
                 }, engine.selector);
 
                 if (links.length > 0) {
-                    console.log(`      ✅ Found ${links.length} links.`);
+                    console.log(`      ✅ Found ${links.length} potential links.`);
                     candidates = links;
                     break; 
                 }
             } catch (e) { console.log(`      ❌ Error: ${e.message}`); }
         }
 
-        // --- DOWNLOAD PHASE ---
-        let count = 0;
+        // --- DOWNLOAD LOOP (Strict Enforcement) ---
+        let validCount = 0;
+        let attemptIndex = 0;
         const uniqueLinks = [...new Set(candidates)];
 
-        for (const link of uniqueLinks) {
-            if (count >= MAX_FILES) break;
-            const filename = `doc_${count + 1}.pdf`;
+        console.log(`   🎯 Goal: ${TARGET_COUNT} valid files.`);
+
+        // Keep trying until we hit the target or run out of links
+        while (validCount < TARGET_COUNT && attemptIndex < uniqueLinks.length) {
+            const link = uniqueLinks[attemptIndex];
+            const filename = `doc_${validCount + 1}.pdf`;
             const savePath = path.join(topicDir, filename);
 
             try {
-                console.log(`   ⬇️ Fetching: ${link.substring(0,40)}...`);
+                process.stdout.write(`   [${validCount}/${TARGET_COUNT}] Trying link ${attemptIndex+1}... `);
                 
-                // METHOD 1: High-Fidelity Axios (The Fix for 0KB)
-                try {
-                    await downloadAxios(link, savePath);
-                    if (isValidFile(savePath)) {
-                        console.log(`      ✅ Saved (High-Fi)`);
-                        count++;
-                        continue;
-                    } else {
-                        // Garbage Collection: Delete the 0KB failure
-                        if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
-                    }
-                } catch (e) {
+                // METHOD 1: High-Fidelity Axios
+                await downloadAxios(link, savePath);
+
+                // STRICT VALIDATION
+                if (isRealPDF(savePath)) {
+                    console.log(`✅ Valid PDF (${getFileSizeKB(savePath)} KB)`);
+                    validCount++;
+                } else {
+                    // It failed validation. Delete it.
+                    // console.log(`❌ Invalid (Too small or HTML junk). Deleted.`);
                     if (fs.existsSync(savePath)) fs.unlinkSync(savePath);
+
+                    // METHOD 2: Browser Backup (Last Resort)
+                    try {
+                        await page.goto(link, { timeout: 8000 });
+                        await new Promise(r => setTimeout(r, 4000)); // Wait for chrome to write
+                        
+                        const browserFile = findNewFile(topicDir);
+                        if (browserFile) {
+                            const bPath = path.join(topicDir, browserFile);
+                            if (isRealPDF(bPath)) {
+                                // Rename it to standard format
+                                fs.renameSync(bPath, savePath);
+                                console.log(`✅ Valid (Browser Backup)`);
+                                validCount++;
+                            } else {
+                                console.log(`❌ Browser fetched junk.`);
+                                fs.unlinkSync(bPath);
+                            }
+                        } else {
+                            console.log(`❌ Failed.`);
+                        }
+                    } catch (e) { console.log(`❌ Failed.`); }
                 }
-
-                // METHOD 2: Browser Backup (If Axios was blocked)
-                try {
-                    console.log(`      ⚠️ Retrying with Browser...`);
-                    await page.goto(link, { timeout: 8000 });
-                    // Wait 3s for Chrome to write the file
-                    await new Promise(r => setTimeout(r, 3000));
-                    
-                    // Check if a new file appeared
-                    const found = findNewFile(topicDir);
-                    if (found) {
-                        console.log(`      ✅ Saved (Browser): ${found}`);
-                        count++;
-                    }
-                } catch (e) {}
-
-            } catch (e) { }
+            } catch (e) { console.log(`❌ Error.`); }
+            
+            attemptIndex++;
+        }
+        
+        if (validCount < TARGET_COUNT) {
+            console.log(`   ⚠️ Warning: Ran out of links. Got ${validCount}/${TARGET_COUNT} valid files.`);
         }
     }
 
@@ -141,47 +156,60 @@ const ENGINES = [
     console.log("\n🏁 JOB DONE");
 })();
 
-// --- THE FIX: FAKE BROWSER HEADERS ---
+// --- HELPERS ---
+
 async function downloadAxios(url, dest) {
     const writer = fs.createWriteStream(dest);
-    const response = await axios({
-        url, 
-        method: 'GET', 
-        responseType: 'stream',
-        headers: { 
-            // This block makes the server think we are a real human
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Referer': 'https://www.google.com/',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'cross-site'
-        }, 
-        timeout: 10000,
-        maxRedirects: 5
-    });
-
-    response.data.pipe(writer);
-
-    return new Promise((resolve, reject) => {
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-    });
+    try {
+        const response = await axios({
+            url, 
+            method: 'GET', 
+            responseType: 'stream',
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.google.com/',
+                'Upgrade-Insecure-Requests': '1'
+            }, 
+            timeout: 10000,
+            maxRedirects: 5
+        });
+        response.data.pipe(writer);
+        return new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+        });
+    } catch (e) { writer.close(); fs.unlink(dest, ()=>{}); }
 }
 
-// Validity Check: Is file > 5KB?
-function isValidFile(path) {
-    return fs.existsSync(path) && fs.statSync(path).size > 5000;
+// THE JUDGE: Checks if file is > 50KB AND starts with %PDF
+function isRealPDF(filepath) {
+    if (!fs.existsSync(filepath)) return false;
+    
+    const size = fs.statSync(filepath).size;
+    if (size < MIN_SIZE_BYTES) return false; // Too small (28KB files die here)
+
+    // Check Magic Bytes
+    const buffer = Buffer.alloc(4);
+    const fd = fs.openSync(filepath, 'r');
+    fs.readSync(fd, buffer, 0, 4, 0);
+    fs.closeSync(fd);
+    
+    // Header must be %PDF
+    if (buffer.toString() === '%PDF') return true;
+
+    // Edge case: Some PDFs have junk before header, check first 1024 bytes
+    const largeBuffer = fs.readFileSync(filepath, { start: 0, end: 1024 });
+    return largeBuffer.includes('%PDF');
+}
+
+function getFileSizeKB(filepath) {
+    return Math.round(fs.statSync(filepath).size / 1024);
 }
 
 function findNewFile(dir) {
     try {
         const files = fs.readdirSync(dir);
-        // Find files that are NOT temporary and > 5KB
-        return files.find(f => !f.endsWith('.crdownload') && !f.endsWith('.png') && fs.statSync(path.join(dir, f)).size > 5000);
+        // Find newest file that isn't temp
+        return files.find(f => !f.endsWith('.crdownload') && !f.endsWith('.png') && fs.statSync(path.join(dir, f)).size > MIN_SIZE_BYTES);
     } catch (e) { return null; }
 }
