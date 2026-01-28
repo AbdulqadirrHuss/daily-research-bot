@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       research_tasks:
-        description: 'Topics (e.g. Solar Power; Quantum Computing)'
+        description: 'Topics'
         required: true
         default: 'Renewable Energy'
       file_limit:
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   hunt-and-gather:
-    runs-on: ubuntu-24.04 # Explicitly pinning the version you saw in logs
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -30,36 +30,33 @@ jobs:
         with:
           node-version: '18'
 
-      # FIX 1: Install Linux Deps for Headless Chrome
+      # FIX: The "Nuclear" Dependency Installer
+      # Installing Chrome Stable automatically pulls all the correct 't64' libraries
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libgbm1 libasound2 libpangocairo-1.0-0 libxss1 libgtk-3-0
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
 
-      # FIX 2: Create Download Folder Explicitly
       - name: Create Workspace
         run: mkdir -p downloads
 
       - name: Install NPM Packages
         run: npm install
 
-      # FIX 3: Run the Bot with explicit environment mapping
       - name: Run Research Bot
         env:
           TASKS: ${{ inputs.research_tasks }}
           MAX_FILES: ${{ inputs.file_limit }}
-          # Force Puppeteer to see the workspace
           PUPPETEER_DOWNLOAD_PATH: ${{ github.workspace }}/downloads
         run: node index.js
 
-      # FIX 4: Debug - List files (so we see if they exist before upload)
       - name: List Downloads
         run: ls -R downloads/
         continue-on-error: true
 
-      # FIX 5: Always Upload (Even if script fails)
       - name: Upload Artifacts
-        if: always() 
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Research_Mission_Logs
