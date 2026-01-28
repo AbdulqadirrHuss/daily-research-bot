@@ -2,36 +2,30 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios'); // The secret weapon
+const axios = require('axios');
 
 puppeteer.use(StealthPlugin());
 
 // --- CONFIGURATION ---
 const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
 const MAX_FILES = parseInt(process.env.MAX_FILES) || 10;
-// CRITICAL: Use absolute path for GitHub Actions
 const DOWNLOAD_DIR = path.resolve(__dirname, 'downloads');
 
 // Ensure folder exists
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 (async () => {
-    console.log("🤖 HYBRID BOT ONLINE (Puppeteer + Axios)");
-    console.log(`📂 Saving to: ${DOWNLOAD_DIR}`);
-
+    console.log("🤖 SESSION-HIJACK BOT ONLINE");
+    
     const browser = await puppeteer.launch({
         headless: "new",
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-features=IsolateOrigins,site-per-process' // 2025 stability fix
-        ]
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
 
     const page = await browser.newPage();
     
-    // Set a consistent User Agent (Update for 2026)
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+    // 1. Establish a Human Identity
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
     for (const topic of TASKS) {
         console.log(`\n🚀 HUNTING: "${topic}"`);
@@ -39,14 +33,11 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         if (!fs.existsSync(topicDir)) fs.mkdirSync(topicDir, { recursive: true });
 
         try {
-            // STRATEGY: HTML-Only DuckDuckGo (Fastest, least blocks)
+            // Use HTML DuckDuckGo (Least resistance)
             const q = encodeURIComponent(`${topic} filetype:pdf`);
-            const url = `https://html.duckduckgo.com/html/?q=${q}`;
-            
-            console.log(`   📡 Scanning...`);
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.goto(`https://html.duckduckgo.com/html/?q=${q}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-            // 1. EXTRACT LINKS (Do not click them!)
+            // Gather Links
             const pdfLinks = await page.evaluate(() => {
                 return Array.from(document.querySelectorAll('a'))
                     .map(a => a.href)
@@ -55,7 +46,12 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
             console.log(`   🔗 Found ${pdfLinks.length} candidates.`);
 
-            // 2. DOWNLOAD WITH AXIOS (Bypasses Headless Chrome issues)
+            // 2. THE HIJACK: Get the "Passport" (Cookies + UA)
+            const cookies = await page.cookies();
+            const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+            const userAgent = await page.evaluate(() => navigator.userAgent);
+
+            // 3. DOWNLOAD WITH PASSPORT
             let count = 0;
             const uniqueLinks = [...new Set(pdfLinks)];
 
@@ -67,15 +63,23 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
                 
                 try {
                     console.log(`   ⬇️ Downloading: ${filename}...`);
-                    await downloadViaAxios(link, savePath);
-                    console.log(`      ✅ Success`);
-                    count++;
+                    
+                    // Pass the browser's credentials to Axios
+                    await downloadWithCookies(link, savePath, cookieString, userAgent);
+                    
+                    // 4. VERIFY IT IS A REAL PDF
+                    if (isValidPDF(savePath)) {
+                        console.log(`      ✅ Verified PDF`);
+                        count++;
+                    } else {
+                        console.log(`      ⚠️ Invalid File (Deleted)`);
+                        fs.unlinkSync(savePath);
+                    }
                 } catch (e) {
-                    console.log(`      ❌ Failed: ${e.message}`);
+                    console.log(`      ❌ Error: ${e.message}`);
                 }
                 
-                // Be polite to the server
-                await new Promise(r => setTimeout(r, 1000));
+                await new Promise(r => setTimeout(r, 1000)); // Be polite
             }
 
         } catch (err) {
@@ -85,16 +89,13 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
     await browser.close();
     
-    // FINAL CHECK
-    console.log("\n📦 FINAL CONTENTS:");
-    const files = findFiles(DOWNLOAD_DIR);
-    console.log(files);
+    // DEBUG: Print file tree
+    console.log("\n📦 STORAGE CHECK:");
+    printTree(DOWNLOAD_DIR);
 
 })();
 
-// --- THE 2026 DOWNLOADER ---
-// Does not use the browser. Uses direct HTTP stream.
-async function downloadViaAxios(url, dest) {
+async function downloadWithCookies(url, dest, cookieString, userAgent) {
     const writer = fs.createWriteStream(dest);
     
     const response = await axios({
@@ -102,11 +103,11 @@ async function downloadViaAxios(url, dest) {
         method: 'GET',
         responseType: 'stream',
         headers: {
-            // Fake the header so servers think we are a browser
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Referer': 'https://www.google.com/'
+            'User-Agent': userAgent,
+            'Cookie': cookieString, // <--- THE KEY FIX
+            'Referer': 'https://html.duckduckgo.com/'
         },
-        timeout: 15000
+        timeout: 20000
     });
 
     response.data.pipe(writer);
@@ -117,16 +118,31 @@ async function downloadViaAxios(url, dest) {
     });
 }
 
-// Helper to list files
-function findFiles(dir, fileList = []) {
-    const files = fs.readdirSync(dir);
-    files.forEach(file => {
-        const filePath = path.join(dir, file);
-        if (fs.statSync(filePath).isDirectory()) {
-            findFiles(filePath, fileList);
-        } else {
-            fileList.push(file);
-        }
-    });
-    return fileList;
+// Check first 4 bytes for "%PDF" signature
+function isValidPDF(filepath) {
+    try {
+        const buffer = Buffer.alloc(4);
+        const fd = fs.openSync(filepath, 'r');
+        fs.readSync(fd, buffer, 0, 4, 0);
+        fs.closeSync(fd);
+        return buffer.toString() === '%PDF';
+    } catch (e) {
+        return false;
+    }
+}
+
+function printTree(dir) {
+    try {
+        const files = fs.readdirSync(dir);
+        files.forEach(file => {
+             const fp = path.join(dir, file);
+             if (fs.statSync(fp).isDirectory()) {
+                 console.log(`   DIR: ${file}`);
+                 printTree(fp);
+             } else {
+                 const size = Math.round(fs.statSync(fp).size / 1024);
+                 console.log(`     - ${file} (${size} KB)`);
+             }
+        });
+    } catch(e) {}
 }
