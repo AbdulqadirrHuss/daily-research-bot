@@ -1,52 +1,67 @@
-name: Multi-Task Research Bot
+name: Research Bot 2026
 
 on:
   workflow_dispatch:
     inputs:
       research_tasks:
-        description: 'Topics'
+        description: 'Topics (e.g. Solar Power; Quantum Computing)'
         required: true
         default: 'Renewable Energy'
       file_limit:
         description: 'Files per topic'
         required: true
-        default: '5'
+        default: '10'
 
 permissions:
   contents: read
   actions: write
 
 jobs:
-  run-bot:
-    runs-on: ubuntu-latest
-    
+  hunt-and-gather:
+    runs-on: ubuntu-24.04 # Explicitly pinning the version you saw in logs
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: Install
+      # FIX 1: Install Linux Deps for Headless Chrome
+      - name: Install System Dependencies
         run: |
-          npm install
-          npx playwright install chromium
+          sudo apt-get update
+          sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libgbm1 libasound2 libpangocairo-1.0-0 libxss1 libgtk-3-0
 
-      - name: Run Bot
+      # FIX 2: Create Download Folder Explicitly
+      - name: Create Workspace
+        run: mkdir -p downloads
+
+      - name: Install NPM Packages
+        run: npm install
+
+      # FIX 3: Run the Bot with explicit environment mapping
+      - name: Run Research Bot
         env:
           TASKS: ${{ inputs.research_tasks }}
           MAX_FILES: ${{ inputs.file_limit }}
+          # Force Puppeteer to see the workspace
+          PUPPETEER_DOWNLOAD_PATH: ${{ github.workspace }}/downloads
         run: node index.js
 
-      - name: DEBUG - List Files
-        # This will show us in the logs exactly what is in the folder
+      # FIX 4: Debug - List files (so we see if they exist before upload)
+      - name: List Downloads
         run: ls -R downloads/
+        continue-on-error: true
 
+      # FIX 5: Always Upload (Even if script fails)
       - name: Upload Artifacts
+        if: always() 
         uses: actions/upload-artifact@v4
         with:
-          name: Research_Results
+          name: Research_Mission_Logs
           path: downloads/
-          if-no-files-found: warn # Warn us, don't just fail silently
+          retention-days: 5
