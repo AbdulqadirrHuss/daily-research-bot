@@ -1,64 +1,52 @@
-name: Research Bot 2026
+name: Text Miner Bot
 
 on:
   workflow_dispatch:
     inputs:
-      research_tasks:
-        description: 'Topics'
+      query:
+        description: 'Topic to Research'
         required: true
         default: 'Renewable Energy'
-      file_limit:
-        description: 'Files per topic'
+      target_count:
+        description: 'How many articles?'
         required: true
-        default: '10'
+        default: '100'
 
 permissions:
   contents: read
   actions: write
 
 jobs:
-  hunt-and-gather:
+  mine-text:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      # FIX: The "Nuclear" Dependency Installer
-      # Installing Chrome Stable automatically pulls all the correct 't64' libraries
-      - name: Install System Dependencies
+      - name: Install System Dependencies (Chrome)
         run: |
           sudo apt-get update
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
 
-      - name: Create Workspace
-        run: mkdir -p downloads
-
       - name: Install NPM Packages
         run: npm install
 
-      - name: Run Research Bot
+      - name: Run Miner
         env:
-          TASKS: ${{ inputs.research_tasks }}
-          MAX_FILES: ${{ inputs.file_limit }}
-          PUPPETEER_DOWNLOAD_PATH: ${{ github.workspace }}/downloads
+          INPUT_QUERY: ${{ inputs.query }}
+          INPUT_TARGET: ${{ inputs.target_count }}
         run: node index.js
 
-      - name: List Downloads
-        run: ls -R downloads/
-        continue-on-error: true
-
-      - name: Upload Artifacts
-        if: always()
+      - name: Upload Volumes
         uses: actions/upload-artifact@v4
         with:
-          name: Research_Mission_Logs
-          path: downloads/
-          retention-days: 5
+          name: Research_Volumes
+          path: research_text/
