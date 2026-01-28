@@ -1,29 +1,37 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-puppeteer.use(StealthPlugin());
-
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
+const axios = require('axios'); // The secret weapon
+
+puppeteer.use(StealthPlugin());
 
 // --- CONFIGURATION ---
 const TASKS = (process.env.TASKS || "Renewable Energy").split(';').map(t => t.trim());
 const MAX_FILES = parseInt(process.env.MAX_FILES) || 10;
-const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
+// CRITICAL: Use absolute path for GitHub Actions
+const DOWNLOAD_DIR = path.resolve(__dirname, 'downloads');
 
-// Ensure the download folder exists immediately
+// Ensure folder exists
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 (async () => {
-    console.log("🤖 PUPPETEER STEALTH BOT ONLINE");
-    
-    // Launch Browser (Headless for GitHub)
+    console.log("🤖 HYBRID BOT ONLINE (Puppeteer + Axios)");
+    console.log(`📂 Saving to: ${DOWNLOAD_DIR}`);
+
     const browser = await puppeteer.launch({
         headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-features=IsolateOrigins,site-per-process' // 2025 stability fix
+        ]
     });
 
     const page = await browser.newPage();
+    
+    // Set a consistent User Agent (Update for 2026)
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
 
     for (const topic of TASKS) {
         console.log(`\n🚀 HUNTING: "${topic}"`);
@@ -31,75 +39,94 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         if (!fs.existsSync(topicDir)) fs.mkdirSync(topicDir, { recursive: true });
 
         try {
-            // STRATEGY: Use the HTML-only version of DDG. 
-            // It is much harder for them to block this than the main JS site.
+            // STRATEGY: HTML-Only DuckDuckGo (Fastest, least blocks)
             const q = encodeURIComponent(`${topic} filetype:pdf`);
             const url = `https://html.duckduckgo.com/html/?q=${q}`;
             
-            console.log(`   📡 Connecting...`);
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            console.log(`   📡 Scanning...`);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-            // "Vacuum" Strategy: Get ALL links ending in .pdf
+            // 1. EXTRACT LINKS (Do not click them!)
             const pdfLinks = await page.evaluate(() => {
                 return Array.from(document.querySelectorAll('a'))
                     .map(a => a.href)
                     .filter(href => href.toLowerCase().endsWith('.pdf'));
             });
 
-            console.log(`   🔗 Found ${pdfLinks.length} PDF links.`);
+            console.log(`   🔗 Found ${pdfLinks.length} candidates.`);
 
-            // DEBUG: If zero links, take a picture so we see WHY
-            if (pdfLinks.length === 0) {
-                console.log("   ⚠️ Zero links. Taking Screenshot...");
-                await page.screenshot({ path: path.join(DOWNLOAD_DIR, `debug_${topic.substring(0,10)}.png`) });
-            }
-
-            // DOWNLOAD LOOP
+            // 2. DOWNLOAD WITH AXIOS (Bypasses Headless Chrome issues)
             let count = 0;
-            const uniqueLinks = [...new Set(pdfLinks)]; // Remove duplicates
+            const uniqueLinks = [...new Set(pdfLinks)];
 
             for (const link of uniqueLinks) {
                 if (count >= MAX_FILES) break;
                 
-                const dest = path.join(topicDir, `doc_${count + 1}.pdf`);
+                const filename = `doc_${count + 1}.pdf`;
+                const savePath = path.join(topicDir, filename);
+                
                 try {
-                    await downloadFile(link, dest);
-                    
-                    // Verify file size (skip empty 0kb files)
-                    if (fs.existsSync(dest) && fs.statSync(dest).size > 3000) {
-                        console.log(`   ✅ Saved: ${link.substring(0, 40)}...`);
-                        count++;
-                    } else {
-                        if (fs.existsSync(dest)) fs.unlinkSync(dest);
-                    }
+                    console.log(`   ⬇️ Downloading: ${filename}...`);
+                    await downloadViaAxios(link, savePath);
+                    console.log(`      ✅ Success`);
+                    count++;
                 } catch (e) {
-                    // Ignore errors
+                    console.log(`      ❌ Failed: ${e.message}`);
                 }
+                
+                // Be polite to the server
+                await new Promise(r => setTimeout(r, 1000));
             }
 
         } catch (err) {
-            console.error(`   ❌ Error: ${err.message}`);
+            console.error(`   ❌ Task Error: ${err.message}`);
         }
     }
 
     await browser.close();
+    
+    // FINAL CHECK
+    console.log("\n📦 FINAL CONTENTS:");
+    const files = findFiles(DOWNLOAD_DIR);
+    console.log(files);
+
 })();
 
-// Simple Downloader
-function downloadFile(url, dest) {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        const req = https.get(url, { 
-            headers: { 'User-Agent': 'Mozilla/5.0' }, // Pretend to be a browser
-            timeout: 10000 
-        }, res => {
-            if (res.statusCode === 200) {
-                res.pipe(file);
-                file.on('finish', () => file.close(resolve));
-            } else {
-                file.close(); fs.unlink(dest, () => {}); resolve(); 
-            }
-        });
-        req.on('error', () => { file.close(); fs.unlink(dest, () => {}); resolve(); });
+// --- THE 2026 DOWNLOADER ---
+// Does not use the browser. Uses direct HTTP stream.
+async function downloadViaAxios(url, dest) {
+    const writer = fs.createWriteStream(dest);
+    
+    const response = await axios({
+        url,
+        method: 'GET',
+        responseType: 'stream',
+        headers: {
+            // Fake the header so servers think we are a browser
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Referer': 'https://www.google.com/'
+        },
+        timeout: 15000
     });
+
+    response.data.pipe(writer);
+
+    return new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+    });
+}
+
+// Helper to list files
+function findFiles(dir, fileList = []) {
+    const files = fs.readdirSync(dir);
+    files.forEach(file => {
+        const filePath = path.join(dir, file);
+        if (fs.statSync(filePath).isDirectory()) {
+            findFiles(filePath, fileList);
+        } else {
+            fileList.push(file);
+        }
+    });
+    return fileList;
 }
