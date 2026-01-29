@@ -33,182 +33,158 @@ function saveVolume(volNum, content, query) {
     console.log(`\n    💾 Saved ${filename} (${Math.round(content.length / 1024)} KB)`);
 }
 
-// --- HTTP-BASED SEARCH (No browser needed) ---
-async function searchDDGHtml(query, maxLinks) {
+// --- WIKIPEDIA API SEARCH (Works from any IP) ---
+async function searchWikipedia(query, maxLinks) {
     const links = [];
-    console.log(`\n🔍 Searching DuckDuckGo Lite for: "${query}"...`);
+    console.log(`\n🔍 Searching Wikipedia API for: "${query}"...`);
 
     try {
-        // DuckDuckGo HTML light version - works without JavaScript
-        const response = await axios.get('https://lite.duckduckgo.com/lite/', {
-            params: { q: query },
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml',
-                'Accept-Language': 'en-US,en;q=0.9'
+        // Wikipedia API is public and doesn't block IPs
+        const response = await axios.get('https://en.wikipedia.org/w/api.php', {
+            params: {
+                action: 'query',
+                list: 'search',
+                srsearch: query,
+                srlimit: Math.min(maxLinks, 50),
+                format: 'json',
+                origin: '*'
             },
+            headers: {
+                'User-Agent': 'ResearchBot/1.0 (Educational; contact@example.com)'
+            },
+            timeout: 15000
+        });
+
+        const results = response.data?.query?.search || [];
+        console.log(`   Found ${results.length} Wikipedia articles`);
+
+        for (const result of results) {
+            const title = result.title.replace(/ /g, '_');
+            links.push(`https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`);
+        }
+
+        console.log(`   ✅ Extracted ${links.length} Wikipedia links`);
+    } catch (e) {
+        console.log(`   ❌ Wikipedia API failed: ${e.message}`);
+    }
+
+    return links;
+}
+
+// --- RSS/ATOM FEED SEARCH (News aggregators) ---
+async function searchRSSFeeds(query, maxLinks) {
+    const links = [];
+    console.log(`\n🔍 Searching News RSS Feeds for: "${query}"...`);
+
+    const rssFeeds = [
+        // Google News RSS (works without auth)
+        `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`,
+        // Bing News RSS
+        `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss`,
+    ];
+
+    for (const feedUrl of rssFeeds) {
+        if (links.length >= maxLinks) break;
+
+        try {
+            console.log(`   Trying: ${feedUrl.substring(0, 60)}...`);
+            const response = await axios.get(feedUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (compatible; ResearchBot/1.0)',
+                    'Accept': 'application/rss+xml, application/xml, text/xml'
+                },
+                timeout: 15000
+            });
+
+            // Parse RSS XML
+            const dom = new JSDOM(response.data, { contentType: 'text/xml' });
+            const items = dom.window.document.querySelectorAll('item link, entry link');
+
+            let count = 0;
+            for (const item of items) {
+                const link = item.textContent || item.getAttribute('href');
+                if (link && link.startsWith('http') && !links.includes(link) && links.length < maxLinks) {
+                    links.push(link);
+                    count++;
+                }
+            }
+            console.log(`   Found ${count} links from feed`);
+
+        } catch (e) {
+            console.log(`   Feed failed: ${e.message}`);
+        }
+    }
+
+    console.log(`   ✅ Total RSS links: ${links.length}`);
+    return links;
+}
+
+// --- BROWSER-BASED SEARCH (Using Playwright for search engines) ---
+async function searchWithBrowser(query, maxLinks, browser) {
+    const links = [];
+    console.log(`\n🔍 Browser-based search for: "${query}"...`);
+
+    const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 }
+    });
+    const page = await context.newPage();
+
+    // Try DuckDuckGo with browser
+    try {
+        console.log(`   Trying DuckDuckGo...`);
+        await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}`, {
+            waitUntil: 'networkidle',
             timeout: 30000
         });
 
-        console.log(`   HTTP Status: ${response.status}`);
-        console.log(`   Response size: ${response.data.length} bytes`);
-        console.log(`   Has result-link: ${response.data.includes('result-link')}`);
+        // Wait for results
+        await page.waitForSelector('[data-testid="result"]', { timeout: 10000 }).catch(() => null);
+        await page.waitForTimeout(2000);
 
-        const dom = new JSDOM(response.data);
-        const document = dom.window.document;
+        const ddgLinks = await page.evaluate(() => {
+            const results = document.querySelectorAll('[data-testid="result"] a, .result__a');
+            return Array.from(results)
+                .map(a => a.href)
+                .filter(h => h && h.startsWith('http') && !h.includes('duckduckgo.com'));
+        });
 
-        // DDG Lite returns redirect links - extract actual URL from uddg parameter
-        const resultLinks = document.querySelectorAll('a.result-link');
-        console.log(`   Found ${resultLinks.length} result-link elements`);
+        ddgLinks.slice(0, maxLinks).forEach(l => { if (!links.includes(l)) links.push(l); });
+        console.log(`   DuckDuckGo found ${ddgLinks.length} results`);
 
-        if (resultLinks.length === 0) {
-            // Try alternative selectors
-            const allLinks = document.querySelectorAll('a');
-            console.log(`   All <a> tags: ${allLinks.length}`);
-
-            // Log first few link classes for debugging
-            for (let i = 0; i < Math.min(5, allLinks.length); i++) {
-                console.log(`   Link ${i}: class="${allLinks[i].className}" href="${(allLinks[i].href || '').substring(0, 30)}"`);
-            }
-        }
-
-        // Convert NodeList to Array for safer iteration
-        const linksArray = Array.from(resultLinks);
-
-        for (let i = 0; i < linksArray.length && links.length < maxLinks; i++) {
-            const a = linksArray[i];
-            try {
-                const rawHref = a.getAttribute('href');
-                if (!rawHref) continue;
-
-                // DDG Lite links are like //duckduckgo.com/l/?uddg=<encoded_url>
-                const fullUrl = rawHref.startsWith('//') ? 'https:' + rawHref : rawHref;
-                const url = new URL(fullUrl);
-                const uddg = url.searchParams.get('uddg');
-
-                if (uddg) {
-                    const decodedUrl = decodeURIComponent(uddg);
-                    if (decodedUrl.startsWith('http') &&
-                        !decodedUrl.includes('duckduckgo.com') &&
-                        !links.includes(decodedUrl)) {
-                        links.push(decodedUrl);
-                    }
-                }
-            } catch (e) {
-                // Skip malformed URLs
-            }
-        }
-
-        console.log(`   ✅ Extracted ${links.length} links from DDG Lite`);
     } catch (e) {
-        console.log(`   ❌ DDG Lite failed: ${e.message}`);
-        console.log(`   Stack: ${e.stack}`);
+        console.log(`   DuckDuckGo failed: ${e.message}`);
     }
 
-    return links;
-}
-
-async function searchBingHtml(query, maxLinks) {
-    const links = [];
-    console.log(`\n🔍 Searching Bing...`);
-
-    for (let page = 0; page < 5 && links.length < maxLinks; page++) {
+    // Try Bing with browser
+    if (links.length < maxLinks) {
         try {
-            const first = page * 10 + 1;
-            const response = await axios.get('https://www.bing.com/search', {
-                params: { q: query, first: first },
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml',
-                    'Accept-Language': 'en-US,en;q=0.9'
-                },
-                timeout: 15000
+            console.log(`   Trying Bing...`);
+            await page.goto(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
             });
 
-            const dom = new JSDOM(response.data);
-            const document = dom.window.document;
+            await page.waitForSelector('#b_results', { timeout: 10000 }).catch(() => null);
+            await page.waitForTimeout(2000);
 
-            // Bing search result selectors
-            const resultLinks = document.querySelectorAll('li.b_algo h2 a, .b_algo a[href^="http"]');
+            const bingLinks = await page.evaluate(() => {
+                const results = document.querySelectorAll('#b_results h2 a, .b_algo h2 a');
+                return Array.from(results)
+                    .map(a => a.href)
+                    .filter(h => h && h.startsWith('http') && !h.includes('bing.com'));
+            });
 
-            let newCount = 0;
-            for (const a of resultLinks) {
-                const href = a.href;
-                if (href && href.startsWith('http') &&
-                    !href.includes('bing.com') &&
-                    !href.includes('microsoft.com') &&
-                    !links.includes(href) &&
-                    links.length < maxLinks) {
-                    links.push(href);
-                    newCount++;
-                }
-            }
-
-            console.log(`   Page ${page + 1}: Found ${newCount} new links (total: ${links.length})`);
-
-            if (newCount === 0) break;
-
-            // Be polite between requests
-            await new Promise(r => setTimeout(r, 1000));
+            bingLinks.slice(0, maxLinks - links.length).forEach(l => { if (!links.includes(l)) links.push(l); });
+            console.log(`   Bing found ${bingLinks.length} results`);
 
         } catch (e) {
-            console.log(`   ❌ Bing page ${page + 1} failed: ${e.message}`);
-            break;
+            console.log(`   Bing failed: ${e.message}`);
         }
     }
 
-    return links;
-}
-
-async function searchGoogle(query, maxLinks) {
-    const links = [];
-    console.log(`\n🔍 Searching Google...`);
-
-    for (let page = 0; page < 5 && links.length < maxLinks; page++) {
-        try {
-            const start = page * 10;
-            const response = await axios.get('https://www.google.com/search', {
-                params: { q: query, start: start },
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml',
-                    'Accept-Language': 'en-US,en;q=0.9'
-                },
-                timeout: 15000
-            });
-
-            const dom = new JSDOM(response.data);
-            const document = dom.window.document;
-
-            // Google search result selectors
-            const resultLinks = document.querySelectorAll('div.g a[href^="http"], a[data-ved][href^="http"]');
-
-            let newCount = 0;
-            for (const a of resultLinks) {
-                const href = a.href;
-                if (href && href.startsWith('http') &&
-                    !href.includes('google.com') &&
-                    !href.includes('webcache') &&
-                    !href.includes('translate.google') &&
-                    !links.includes(href) &&
-                    links.length < maxLinks) {
-                    links.push(href);
-                    newCount++;
-                }
-            }
-
-            console.log(`   Page ${page + 1}: Found ${newCount} new links (total: ${links.length})`);
-
-            if (newCount === 0) break;
-
-            await new Promise(r => setTimeout(r, 1500));
-
-        } catch (e) {
-            console.log(`   ❌ Google page ${page + 1} failed: ${e.message}`);
-            break;
-        }
-    }
-
+    await context.close();
+    console.log(`   ✅ Total browser search links: ${links.length}`);
     return links;
 }
 
@@ -221,7 +197,7 @@ async function processPDF(url) {
             responseType: 'arraybuffer',
             timeout: 30000,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': 'application/pdf,*/*'
             },
             maxRedirects: 10,
@@ -254,7 +230,7 @@ async function processPDF(url) {
     return null;
 }
 
-// --- WEBPAGE PROCESSING (Using Playwright) ---
+// --- WEBPAGE PROCESSING ---
 async function processWebpage(url, page, contentType) {
     try {
         await page.route('**/*', (route) => {
@@ -342,35 +318,40 @@ async function processLink(link, browser, contentType) {
     console.log(`📝 Min Words: ${MIN_WORDS}`);
     console.log(`📑 Content Type: ${CONTENT_TYPE}`);
 
-    // --- STEP 1: HARVEST LINKS (HTTP-based, no browser) ---
+    // Launch browser early for search if needed
+    const browser = await chromium.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+
+    // --- STEP 1: HARVEST LINKS (Multiple strategies) ---
     let collectedLinks = [];
 
-    // Try multiple search engines until we have enough links
-    collectedLinks = await searchDDGHtml(QUERY, TARGET_DOCS);
+    // Strategy 1: Wikipedia API (always works)
+    const wikiLinks = await searchWikipedia(QUERY, Math.ceil(TARGET_DOCS / 2));
+    collectedLinks.push(...wikiLinks);
 
+    // Strategy 2: RSS Feeds (usually works)
     if (collectedLinks.length < TARGET_DOCS) {
-        const bingLinks = await searchBingHtml(QUERY, TARGET_DOCS - collectedLinks.length);
-        collectedLinks = [...new Set([...collectedLinks, ...bingLinks])];
+        const rssLinks = await searchRSSFeeds(QUERY, TARGET_DOCS - collectedLinks.length);
+        rssLinks.forEach(l => { if (!collectedLinks.includes(l)) collectedLinks.push(l); });
     }
 
+    // Strategy 3: Browser-based search (fallback)
     if (collectedLinks.length < TARGET_DOCS) {
-        const googleLinks = await searchGoogle(QUERY, TARGET_DOCS - collectedLinks.length);
-        collectedLinks = [...new Set([...collectedLinks, ...googleLinks])];
+        const browserLinks = await searchWithBrowser(QUERY, TARGET_DOCS - collectedLinks.length, browser);
+        browserLinks.forEach(l => { if (!collectedLinks.includes(l)) collectedLinks.push(l); });
     }
 
     console.log(`\n✅ Harvest Complete. Found ${collectedLinks.length} unique links.`);
 
     if (collectedLinks.length === 0) {
         console.log("❌ No links found. Exiting.");
+        await browser.close();
         process.exit(1);
     }
 
-    // --- STEP 2: PROCESS & COMPRESS (Using Playwright for content) ---
-    const browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-    });
-
+    // --- STEP 2: PROCESS & COMPRESS ---
     const linksArray = collectedLinks.slice(0, TARGET_DOCS);
     let processedCount = 0;
     let successCount = 0;
