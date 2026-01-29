@@ -48,10 +48,12 @@ jobs:
           node-version: '18'
 
       - name: Install NPM Packages
-        run: npm install
+        run: npm ci
 
       - name: Install Playwright Browsers
-        run: npx playwright install chromium --with-deps
+        run: |
+          npm exec playwright install chromium
+          npm exec playwright install-deps chromium
 
       - name: Run Miner
         env:
