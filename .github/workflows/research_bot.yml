@@ -20,13 +20,12 @@ on:
         required: true
         default: '200'
       content_type:
-        description: 'Content type: articles, websites, or both'
+        description: 'Content type: pdfs (only PDFs) or both (PDFs + web pages)'
         required: true
         default: 'both'
         type: choice
         options:
-          - articles
-          - websites
+          - pdfs
           - both
 
 permissions:

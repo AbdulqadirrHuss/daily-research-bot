@@ -11,7 +11,7 @@ const QUERY = process.env.INPUT_QUERY || "Artificial Intelligence Safety";
 const TARGET_DOCS = parseInt(process.env.INPUT_TARGET || "100");
 const DOCS_PER_FILE = parseInt(process.env.INPUT_DOCS_PER_FILE || "40");
 const MIN_WORDS = parseInt(process.env.INPUT_MIN_WORDS || "200");
-const CONTENT_TYPE = process.env.INPUT_CONTENT_TYPE || "both"; // articles, websites, both
+const CONTENT_TYPE = process.env.INPUT_CONTENT_TYPE || "both"; // pdfs (only PDFs) or both (PDFs + web pages)
 
 const OUTPUT_DIR = path.resolve(__dirname, 'research_text');
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
@@ -294,10 +294,20 @@ async function processWebpage(url, page, contentType) {
 }
 
 async function processLink(link, browser, contentType) {
-    if (link.toLowerCase().endsWith('.pdf') || link.toLowerCase().includes('.pdf?')) {
+    const isPdfLink = link.toLowerCase().endsWith('.pdf') || link.toLowerCase().includes('.pdf?');
+
+    // If PDFs only mode, skip non-PDF links
+    if (contentType === 'pdfs' && !isPdfLink) {
+        console.log(`      ⏭️ Skipping non-PDF: ${link.substring(0, 50)}...`);
+        return null;
+    }
+
+    // Process PDF links directly
+    if (isPdfLink) {
         return await processPDF(link);
     }
 
+    // Process web pages (only if contentType is 'both')
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     });
@@ -316,7 +326,7 @@ async function processLink(link, browser, contentType) {
     console.log(`🎯 Goal: ${TARGET_DOCS} items about "${QUERY}"`);
     console.log(`📦 Compression: ${DOCS_PER_FILE} items per text file`);
     console.log(`📝 Min Words: ${MIN_WORDS}`);
-    console.log(`📑 Content Type: ${CONTENT_TYPE}`);
+    console.log(`📑 Content Type: ${CONTENT_TYPE}${CONTENT_TYPE === 'pdfs' ? ' (PDFs only)' : ' (PDFs + web pages)'}`);
 
     // Launch browser early for search if needed
     const browser = await chromium.launch({
@@ -327,19 +337,27 @@ async function processLink(link, browser, contentType) {
     // --- STEP 1: HARVEST LINKS (Multiple strategies) ---
     let collectedLinks = [];
 
-    // Strategy 1: Wikipedia API (always works)
-    const wikiLinks = await searchWikipedia(QUERY, Math.ceil(TARGET_DOCS / 2));
-    collectedLinks.push(...wikiLinks);
+    // Modify query for PDF-only mode
+    const searchQuery = CONTENT_TYPE === 'pdfs' ? `${QUERY} filetype:pdf` : QUERY;
+    console.log(`\n🔎 Search Query: "${searchQuery}"`);
 
-    // Strategy 2: RSS Feeds (usually works)
+    // Strategy 1: Wikipedia API (skip for PDFs mode - Wikipedia doesn't have PDFs)
+    if (CONTENT_TYPE !== 'pdfs') {
+        const wikiLinks = await searchWikipedia(QUERY, Math.ceil(TARGET_DOCS / 2));
+        collectedLinks.push(...wikiLinks);
+    } else {
+        console.log(`\n⏭️ Skipping Wikipedia (no PDFs)`);
+    }
+
+    // Strategy 2: RSS Feeds (works for both modes)
     if (collectedLinks.length < TARGET_DOCS) {
-        const rssLinks = await searchRSSFeeds(QUERY, TARGET_DOCS - collectedLinks.length);
+        const rssLinks = await searchRSSFeeds(searchQuery, TARGET_DOCS - collectedLinks.length);
         rssLinks.forEach(l => { if (!collectedLinks.includes(l)) collectedLinks.push(l); });
     }
 
-    // Strategy 3: Browser-based search (fallback)
+    // Strategy 3: Browser-based search (uses filetype:pdf for pdfs mode)
     if (collectedLinks.length < TARGET_DOCS) {
-        const browserLinks = await searchWithBrowser(QUERY, TARGET_DOCS - collectedLinks.length, browser);
+        const browserLinks = await searchWithBrowser(searchQuery, TARGET_DOCS - collectedLinks.length, browser);
         browserLinks.forEach(l => { if (!collectedLinks.includes(l)) collectedLinks.push(l); });
     }
 
