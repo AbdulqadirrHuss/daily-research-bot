@@ -33,6 +33,185 @@ function saveVolume(volNum, content, query) {
     console.log(`\n    💾 Saved ${filename} (${Math.round(content.length / 1024)} KB)`);
 }
 
+// --- HTTP-BASED SEARCH (No browser needed) ---
+async function searchDDGHtml(query, maxLinks) {
+    const links = [];
+    console.log(`\n🔍 Searching DuckDuckGo Lite for: "${query}"...`);
+
+    try {
+        // DuckDuckGo HTML light version - works without JavaScript
+        const response = await axios.get('https://lite.duckduckgo.com/lite/', {
+            params: { q: query },
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+                'Accept-Language': 'en-US,en;q=0.9'
+            },
+            timeout: 30000
+        });
+
+        console.log(`   HTTP Status: ${response.status}`);
+        console.log(`   Response size: ${response.data.length} bytes`);
+        console.log(`   Has result-link: ${response.data.includes('result-link')}`);
+
+        const dom = new JSDOM(response.data);
+        const document = dom.window.document;
+
+        // DDG Lite returns redirect links - extract actual URL from uddg parameter
+        const resultLinks = document.querySelectorAll('a.result-link');
+        console.log(`   Found ${resultLinks.length} result-link elements`);
+
+        if (resultLinks.length === 0) {
+            // Try alternative selectors
+            const allLinks = document.querySelectorAll('a');
+            console.log(`   All <a> tags: ${allLinks.length}`);
+
+            // Log first few link classes for debugging
+            for (let i = 0; i < Math.min(5, allLinks.length); i++) {
+                console.log(`   Link ${i}: class="${allLinks[i].className}" href="${(allLinks[i].href || '').substring(0, 30)}"`);
+            }
+        }
+
+        // Convert NodeList to Array for safer iteration
+        const linksArray = Array.from(resultLinks);
+
+        for (let i = 0; i < linksArray.length && links.length < maxLinks; i++) {
+            const a = linksArray[i];
+            try {
+                const rawHref = a.getAttribute('href');
+                if (!rawHref) continue;
+
+                // DDG Lite links are like //duckduckgo.com/l/?uddg=<encoded_url>
+                const fullUrl = rawHref.startsWith('//') ? 'https:' + rawHref : rawHref;
+                const url = new URL(fullUrl);
+                const uddg = url.searchParams.get('uddg');
+
+                if (uddg) {
+                    const decodedUrl = decodeURIComponent(uddg);
+                    if (decodedUrl.startsWith('http') &&
+                        !decodedUrl.includes('duckduckgo.com') &&
+                        !links.includes(decodedUrl)) {
+                        links.push(decodedUrl);
+                    }
+                }
+            } catch (e) {
+                // Skip malformed URLs
+            }
+        }
+
+        console.log(`   ✅ Extracted ${links.length} links from DDG Lite`);
+    } catch (e) {
+        console.log(`   ❌ DDG Lite failed: ${e.message}`);
+        console.log(`   Stack: ${e.stack}`);
+    }
+
+    return links;
+}
+
+async function searchBingHtml(query, maxLinks) {
+    const links = [];
+    console.log(`\n🔍 Searching Bing...`);
+
+    for (let page = 0; page < 5 && links.length < maxLinks; page++) {
+        try {
+            const first = page * 10 + 1;
+            const response = await axios.get('https://www.bing.com/search', {
+                params: { q: query, first: first },
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                },
+                timeout: 15000
+            });
+
+            const dom = new JSDOM(response.data);
+            const document = dom.window.document;
+
+            // Bing search result selectors
+            const resultLinks = document.querySelectorAll('li.b_algo h2 a, .b_algo a[href^="http"]');
+
+            let newCount = 0;
+            for (const a of resultLinks) {
+                const href = a.href;
+                if (href && href.startsWith('http') &&
+                    !href.includes('bing.com') &&
+                    !href.includes('microsoft.com') &&
+                    !links.includes(href) &&
+                    links.length < maxLinks) {
+                    links.push(href);
+                    newCount++;
+                }
+            }
+
+            console.log(`   Page ${page + 1}: Found ${newCount} new links (total: ${links.length})`);
+
+            if (newCount === 0) break;
+
+            // Be polite between requests
+            await new Promise(r => setTimeout(r, 1000));
+
+        } catch (e) {
+            console.log(`   ❌ Bing page ${page + 1} failed: ${e.message}`);
+            break;
+        }
+    }
+
+    return links;
+}
+
+async function searchGoogle(query, maxLinks) {
+    const links = [];
+    console.log(`\n🔍 Searching Google...`);
+
+    for (let page = 0; page < 5 && links.length < maxLinks; page++) {
+        try {
+            const start = page * 10;
+            const response = await axios.get('https://www.google.com/search', {
+                params: { q: query, start: start },
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                },
+                timeout: 15000
+            });
+
+            const dom = new JSDOM(response.data);
+            const document = dom.window.document;
+
+            // Google search result selectors
+            const resultLinks = document.querySelectorAll('div.g a[href^="http"], a[data-ved][href^="http"]');
+
+            let newCount = 0;
+            for (const a of resultLinks) {
+                const href = a.href;
+                if (href && href.startsWith('http') &&
+                    !href.includes('google.com') &&
+                    !href.includes('webcache') &&
+                    !href.includes('translate.google') &&
+                    !links.includes(href) &&
+                    links.length < maxLinks) {
+                    links.push(href);
+                    newCount++;
+                }
+            }
+
+            console.log(`   Page ${page + 1}: Found ${newCount} new links (total: ${links.length})`);
+
+            if (newCount === 0) break;
+
+            await new Promise(r => setTimeout(r, 1500));
+
+        } catch (e) {
+            console.log(`   ❌ Google page ${page + 1} failed: ${e.message}`);
+            break;
+        }
+    }
+
+    return links;
+}
+
 // --- PDF PROCESSING ---
 async function processPDF(url) {
     try {
@@ -49,17 +228,14 @@ async function processPDF(url) {
             validateStatus: (status) => status >= 200 && status < 400
         });
 
-        // Check if we actually got a PDF
         const contentType = response.headers['content-type'] || '';
         if (!contentType.includes('pdf') && response.data.length < 50000) {
-            // Small file that's not a PDF - likely an error page
             console.log(`      ⚠️ Not a valid PDF (${contentType})`);
             return null;
         }
 
-        // Check minimum size (real PDFs are usually larger than 50KB)
         if (response.data.length < 10000) {
-            console.log(`      ⚠️ PDF too small (${response.data.length} bytes), likely corrupted`);
+            console.log(`      ⚠️ PDF too small (${response.data.length} bytes)`);
             return null;
         }
 
@@ -78,10 +254,9 @@ async function processPDF(url) {
     return null;
 }
 
-// --- WEBPAGE PROCESSING ---
+// --- WEBPAGE PROCESSING (Using Playwright) ---
 async function processWebpage(url, page, contentType) {
     try {
-        // Set up request interception to block unnecessary resources
         await page.route('**/*', (route) => {
             const resourceType = route.request().resourceType();
             if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
@@ -96,11 +271,8 @@ async function processWebpage(url, page, contentType) {
             timeout: 20000
         });
 
-        if (!response) {
-            return null;
-        }
+        if (!response) return null;
 
-        // Check if it's actually a PDF
         const responseContentType = response.headers()['content-type'] || '';
         if (responseContentType.includes('pdf')) {
             await page.unroute('**/*');
@@ -113,11 +285,9 @@ async function processWebpage(url, page, contentType) {
         let title, textContent;
 
         if (contentType === 'websites') {
-            // Full website mode - get all text
             title = await page.title();
             textContent = dom.window.document.body?.textContent || '';
         } else {
-            // Articles mode or Both mode - try Readability first
             const reader = new Readability(dom.window.document);
             const article = reader.parse();
 
@@ -125,7 +295,6 @@ async function processWebpage(url, page, contentType) {
                 title = article.title;
                 textContent = article.textContent;
             } else if (contentType === 'both') {
-                // Fallback to full content in 'both' mode
                 title = await page.title();
                 textContent = dom.window.document.body?.textContent || '';
             } else {
@@ -148,14 +317,11 @@ async function processWebpage(url, page, contentType) {
     return null;
 }
 
-// --- LINK PROCESSING ---
 async function processLink(link, browser, contentType) {
-    // Check if it's a PDF link
     if (link.toLowerCase().endsWith('.pdf') || link.toLowerCase().includes('.pdf?')) {
         return await processPDF(link);
     }
 
-    // Process as webpage
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     });
@@ -170,149 +336,48 @@ async function processLink(link, browser, contentType) {
 
 // --- MAIN EXECUTION ---
 (async () => {
-    console.log(`\n🚜 TEXT MINER BOT ONLINE (Playwright Edition)`);
+    console.log(`\n🚜 TEXT MINER BOT ONLINE`);
     console.log(`🎯 Goal: ${TARGET_DOCS} items about "${QUERY}"`);
     console.log(`📦 Compression: ${DOCS_PER_FILE} items per text file`);
     console.log(`📝 Min Words: ${MIN_WORDS}`);
     console.log(`📑 Content Type: ${CONTENT_TYPE}`);
 
+    // --- STEP 1: HARVEST LINKS (HTTP-based, no browser) ---
+    let collectedLinks = [];
+
+    // Try multiple search engines until we have enough links
+    collectedLinks = await searchDDGHtml(QUERY, TARGET_DOCS);
+
+    if (collectedLinks.length < TARGET_DOCS) {
+        const bingLinks = await searchBingHtml(QUERY, TARGET_DOCS - collectedLinks.length);
+        collectedLinks = [...new Set([...collectedLinks, ...bingLinks])];
+    }
+
+    if (collectedLinks.length < TARGET_DOCS) {
+        const googleLinks = await searchGoogle(QUERY, TARGET_DOCS - collectedLinks.length);
+        collectedLinks = [...new Set([...collectedLinks, ...googleLinks])];
+    }
+
+    console.log(`\n✅ Harvest Complete. Found ${collectedLinks.length} unique links.`);
+
+    if (collectedLinks.length === 0) {
+        console.log("❌ No links found. Exiting.");
+        process.exit(1);
+    }
+
+    // --- STEP 2: PROCESS & COMPRESS (Using Playwright for content) ---
     const browser = await chromium.launch({
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
-    // --- STEP 1: HARVEST LINKS ---
-    const searchContext = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 }
-    });
-    const searchPage = await searchContext.newPage();
-
-    let collectedLinks = new Set();
-    let pageNum = 0;
-    const maxPages = Math.ceil(TARGET_DOCS / 10) + 5;
-
-    // Use DuckDuckGo (with JS) and Bing as fallback
-    const searchEngines = [
-        {
-            name: 'DuckDuckGo',
-            getUrl: (query, page) => `https://duckduckgo.com/?q=${encodeURIComponent(query)}&t=h_&ia=web`,
-            waitSelector: 'article[data-testid="result"]',
-            selectors: [
-                'article[data-testid="result"] a[href^="http"]',
-                '[data-testid="result-title-a"]',
-                'a.result__a',
-                '.nrn-react-div a[href^="http"]'
-            ],
-            filter: (href) => href && href.startsWith('http') && !href.includes('duckduckgo.com') && !href.includes('duck.co'),
-            singlePage: true
-        },
-        {
-            name: 'Bing',
-            getUrl: (query, page) => `https://www.bing.com/search?q=${encodeURIComponent(query)}&first=${page * 10 + 1}`,
-            waitSelector: '#b_results',
-            selectors: [
-                '#b_results h2 a',
-                'li.b_algo h2 a',
-                '.b_algo h2 a',
-                'cite + a',
-                '#b_results a[href^="http"]'
-            ],
-            filter: (href) => href && href.startsWith('http') && !href.includes('bing.com') && !href.includes('microsoft.com') && !href.includes('go.microsoft'),
-            singlePage: false
-        }
-    ];
-
-    for (const engine of searchEngines) {
-        if (collectedLinks.size >= TARGET_DOCS) break;
-
-        console.log(`\n🔍 Using ${engine.name} Search...`);
-        pageNum = 0;
-
-        while (collectedLinks.size < TARGET_DOCS && pageNum < Math.min(maxPages, 20)) {
-            console.log(`   📡 Scanning Page ${pageNum + 1}... (Pool: ${collectedLinks.size})`);
-
-            try {
-                const searchUrl = engine.getUrl(QUERY, pageNum);
-                console.log(`      URL: ${searchUrl}`);
-                await searchPage.goto(searchUrl, { waitUntil: 'networkidle', timeout: 45000 });
-
-                // Wait for search results to appear
-                if (engine.waitSelector) {
-                    try {
-                        await searchPage.waitForSelector(engine.waitSelector, { timeout: 10000 });
-                        console.log(`      ✅ Found results container`);
-                    } catch (e) {
-                        console.log(`      ⚠️ Results container not found, trying anyway...`);
-                    }
-                }
-                await searchPage.waitForTimeout(2000);
-
-                // Debug: Log page title
-                const pageTitle = await searchPage.title();
-                console.log(`      Page title: ${pageTitle}`);
-
-                // Try multiple selectors
-                let newLinks = [];
-                for (const selector of engine.selectors) {
-                    const links = await searchPage.evaluate((sel) => {
-                        return Array.from(document.querySelectorAll(sel)).map(a => a.href);
-                    }, selector);
-                    if (links.length > 0) {
-                        console.log(`      Selector "${selector}" found ${links.length} links`);
-                    }
-                    newLinks.push(...links);
-                }
-
-                // Filter and dedupe
-                newLinks = [...new Set(newLinks)].filter(engine.filter);
-
-                console.log(`      Total filtered: ${newLinks.length} new links`);
-
-                if (newLinks.length === 0) {
-                    console.log("      ⚠️ No results on this page, trying next...");
-                    pageNum++;
-                    if (pageNum >= 3 && collectedLinks.size === 0) {
-                        console.log("      ⚠️ No results after 3 pages, switching search engine...");
-                        break;
-                    }
-                    continue;
-                }
-
-                newLinks.forEach(l => collectedLinks.add(l));
-                pageNum++;
-
-                // If this is a single-page search engine, break after first successful page
-                if (engine.singlePage) {
-                    console.log(`      ✅ ${engine.name} single-page search complete`);
-                    break;
-                }
-
-            } catch (e) {
-                console.log(`      ❌ Search Error: ${e.message}`);
-                if (pageNum === 0) break; // Switch engines if first page fails
-                pageNum++;
-            }
-        }
-    }
-
-    await searchContext.close();
-    console.log(`\n✅ Harvest Complete. Found ${collectedLinks.size} links.`);
-
-    if (collectedLinks.size === 0) {
-        console.log("❌ No links found. Exiting.");
-        await browser.close();
-        process.exit(1);
-    }
-
-    // --- STEP 2: PROCESS & COMPRESS ---
-    const linksArray = Array.from(collectedLinks).slice(0, TARGET_DOCS);
+    const linksArray = collectedLinks.slice(0, TARGET_DOCS);
     let processedCount = 0;
     let successCount = 0;
     let currentVolume = 1;
     let currentBuffer = "";
 
-    const CONCURRENCY = 3; // Lower concurrency for stability
+    const CONCURRENCY = 3;
 
     for (let i = 0; i < linksArray.length; i += CONCURRENCY) {
         const chunk = linksArray.slice(i, i + CONCURRENCY);
@@ -329,7 +394,6 @@ async function processLink(link, browser, contentType) {
 
         process.stdout.write(`\r⚙️  Processed: ${processedCount}/${linksArray.length} (Success: ${successCount})`);
 
-        // Check if we need to dump the buffer to a file
         if (successCount > 0 && successCount % DOCS_PER_FILE === 0 && currentBuffer.length > 0) {
             saveVolume(currentVolume, currentBuffer, QUERY);
             currentVolume++;
@@ -337,7 +401,6 @@ async function processLink(link, browser, contentType) {
         }
     }
 
-    // Save any leftovers
     if (currentBuffer.length > 0) {
         saveVolume(currentVolume, currentBuffer, QUERY);
     }

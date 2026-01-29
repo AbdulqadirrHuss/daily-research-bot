@@ -1,0 +1,25 @@
+
+???? TEXT MINER BOT ONLINE
+???? Goal: 10 items about "AI"
+???? Compression: 5 items per text file
+???? Min Words: 100
+???? Content Type: both
+
+???? Searching DuckDuckGo Lite for: "AI"...
+   HTTP Status: 202
+   Response size: 14312 bytes
+   Has result-link: false
+   Found 0 result-link elements
+   All <a> tags: 2
+   Link 0: class="" href=""
+   Link 1: class="header-url" href="/lite/"
+   ??? Extracted 0 links from DDG Lite
+
+???? Searching Bing...
+   Page 1: Found 0 new links (total: 0)
+
+???? Searching Google...
+   Page 1: Found 0 new links (total: 0)
+
+??? Harvest Complete. Found 0 unique links.
+??? No links found. Exiting.
