@@ -1,14 +1,17 @@
 {
   "name": "text-miner-bot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "main": "index.js",
+  "description": "Research bot that extracts articles and PDFs from web searches",
   "dependencies": {
-    "puppeteer": "^23.0.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "playwright": "^1.50.0",
     "axios": "^1.6.0",
     "jsdom": "^23.0.0",
     "@mozilla/readability": "^0.5.0",
     "pdf-parse": "^1.1.1"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "install-browsers": "npx playwright install chromium"
   }
 }

@@ -8,9 +8,26 @@ on:
         required: true
         default: 'Renewable Energy'
       target_count:
-        description: 'How many articles?'
+        description: 'How many articles to find?'
         required: true
         default: '100'
+      docs_per_file:
+        description: 'Articles per output file (compression)'
+        required: true
+        default: '40'
+      min_words:
+        description: 'Minimum word count filter'
+        required: true
+        default: '200'
+      content_type:
+        description: 'Content type: articles, websites, or both'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - articles
+          - websites
+          - both
 
 permissions:
   contents: read
@@ -30,19 +47,19 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install System Dependencies (Chrome)
-        run: |
-          sudo apt-get update
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
-
       - name: Install NPM Packages
         run: npm install
+
+      - name: Install Playwright Browsers
+        run: npx playwright install chromium --with-deps
 
       - name: Run Miner
         env:
           INPUT_QUERY: ${{ inputs.query }}
           INPUT_TARGET: ${{ inputs.target_count }}
+          INPUT_DOCS_PER_FILE: ${{ inputs.docs_per_file }}
+          INPUT_MIN_WORDS: ${{ inputs.min_words }}
+          INPUT_CONTENT_TYPE: ${{ inputs.content_type }}
         run: node index.js
 
       - name: Upload Volumes
