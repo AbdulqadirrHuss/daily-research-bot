@@ -163,28 +163,37 @@ function generateResearchPDF(volNum, sources, query, outputDir) {
         // ---- CONTENT ----
         doc.fontSize(10.5).font('Times-Roman').fillColor('#333333');
 
-        // Clean content
+        // Clean content while preserving structure
         let content = source.content || '';
         content = content
             .replace(/\r\n/g, '\n')
-            .replace(/\n{3,}/g, '\n\n')
-            .replace(/[ \t]+/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')  // Normalize paragraph breaks
             .trim();
 
-        // Split into paragraphs
-        const paragraphs = content.split(/\n\n+/).filter(p => p.trim().length > 15);
+        // Split into paragraphs (double newlines = paragraph break)
+        // Also handle single newlines as soft breaks within content
+        const paragraphs = content.split(/\n\n+/).filter(p => p.trim().length > 0);
 
         for (const para of paragraphs) {
             const cleanPara = para.trim();
             if (!cleanPara) continue;
 
-            const paraHeight = doc.heightOfString(cleanPara, {
-                width: 451,
-                lineGap: 2
-            });
+            // Check if paragraph contains multiple lines (soft breaks)
+            // Preserve these as they may be intentional formatting (lists, poetry, etc.)
+            const lines = cleanPara.split('\n').filter(l => l.trim().length > 0);
+
+            // Calculate total height needed for this paragraph
+            let totalHeight = 0;
+            for (const line of lines) {
+                totalHeight += doc.heightOfString(line.trim(), {
+                    width: 451,
+                    lineGap: 2
+                });
+            }
+            totalHeight += (lines.length - 1) * 4; // Add spacing between lines
 
             // Check for page break
-            if (doc.y + paraHeight > 750) {
+            if (doc.y + totalHeight > 750) {
                 doc.addPage();
 
                 // Running header
@@ -194,12 +203,35 @@ function generateResearchPDF(volNum, sources, query, outputDir) {
                 doc.fontSize(10.5).font('Times-Roman').fillColor('#333333');
             }
 
-            doc.text(cleanPara, 72, doc.y, {
-                width: 451,
-                align: 'justify',
-                lineGap: 2
-            });
-            doc.moveDown(0.5);
+            // Render each line in the paragraph
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+
+                // Check for page break mid-paragraph
+                const lineHeight = doc.heightOfString(line, { width: 451, lineGap: 2 });
+                if (doc.y + lineHeight > 750) {
+                    doc.addPage();
+                    doc.fontSize(8).font('Helvetica-Oblique').fillColor('#999999');
+                    doc.text(`Source ${idx + 1} (continued)`, 72, 40, { align: 'right', width: 451 });
+                    doc.y = 60;
+                    doc.fontSize(10.5).font('Times-Roman').fillColor('#333333');
+                }
+
+                doc.text(line, 72, doc.y, {
+                    width: 451,
+                    align: 'justify',
+                    lineGap: 2
+                });
+
+                // Small gap between lines within same paragraph
+                if (i < lines.length - 1) {
+                    doc.moveDown(0.15);
+                }
+            }
+
+            // Paragraph spacing (larger gap between paragraphs)
+            doc.moveDown(0.7);
         }
 
         // ---- FOOTER ----

@@ -99,7 +99,25 @@ function countWords(text) {
 function formatOutput(type, title, url, content) {
     // Sanitize content to remove garbled text and citations
     const sanitized = sanitizeContent(content);
-    const cleanText = sanitized.replace(/\s\s+/g, ' ').trim();
+
+    // Preserve paragraph structure while cleaning up excessive whitespace
+    // 1. Normalize line endings
+    let cleanText = sanitized.replace(/\r\n/g, '\n');
+
+    // 2. Normalize paragraph breaks (2+ newlines become exactly 2)
+    cleanText = cleanText.replace(/\n{3,}/g, '\n\n');
+
+    // 3. Collapse multiple spaces/tabs within lines (but preserve newlines)
+    cleanText = cleanText.replace(/[ \t]+/g, ' ');
+
+    // 4. Clean up lines that are just whitespace
+    cleanText = cleanText.replace(/\n[ \t]+\n/g, '\n\n');
+
+    // 5. Trim each line
+    cleanText = cleanText.split('\n').map(line => line.trim()).join('\n');
+
+    // 6. Final trim
+    cleanText = cleanText.trim();
 
     // Return structured data for PDF generation
     return {

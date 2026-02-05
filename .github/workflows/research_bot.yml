@@ -66,5 +66,5 @@ jobs:
       - name: Upload Volumes
         uses: actions/upload-artifact@v4
         with:
-          name: Research_Volumes
+          name: Research Volume (${{ inputs.query }})
           path: research_text/

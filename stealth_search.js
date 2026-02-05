@@ -138,6 +138,48 @@ async function humanize(page) {
 }
 
 /**
+ * Scroll down the page to load more results
+ * Many search engines use infinite scroll or lazy loading
+ * @param {Page} page - Playwright page object
+ * @param {number} scrollCount - Number of times to scroll (default 3)
+ * @param {number} scrollDelay - Delay between scrolls in ms (default 1000)
+ */
+async function scrollForMoreResults(page, scrollCount = 3, scrollDelay = 1000) {
+    console.log(`   📜 Scrolling to load more results (${scrollCount} scrolls)...`);
+
+    for (let i = 0; i < scrollCount; i++) {
+        // Get current scroll height
+        const previousHeight = await page.evaluate(() => document.body.scrollHeight);
+
+        // Scroll to bottom with human-like behavior
+        await page.evaluate(() => {
+            window.scrollTo({
+                top: document.body.scrollHeight,
+                behavior: 'smooth'
+            });
+        });
+
+        // Wait for potential new content to load
+        await page.waitForTimeout(scrollDelay + Math.random() * 500);
+
+        // Check if we've loaded new content
+        const newHeight = await page.evaluate(() => document.body.scrollHeight);
+
+        // Add slight random mouse movement to seem more human
+        await page.mouse.move(
+            200 + Math.random() * 300,
+            300 + Math.random() * 200
+        );
+
+        // If no new content loaded after 2 scrolls, break early
+        if (newHeight === previousHeight && i >= 1) {
+            console.log(`   📜 No more content to load after ${i + 1} scrolls`);
+            break;
+        }
+    }
+}
+
+/**
  * Search DuckDuckGo with stealth mode
  * Uses the lite version which has less bot detection
  */
@@ -156,32 +198,62 @@ async function searchDuckDuckGoLite(query, maxLinks, context) {
 
         await humanize(page);
 
-        // Lite version has simpler HTML structure
-        const ddgLinks = await page.evaluate(() => {
-            const results = [];
-            // Lite version uses simple table structure
-            const rows = document.querySelectorAll('table tr');
-            rows.forEach(row => {
-                const link = row.querySelector('a.result-link');
-                if (link && link.href && link.href.startsWith('http')) {
-                    results.push(link.href);
-                }
+        // Helper function to extract links from current page
+        const extractLinks = async () => {
+            return await page.evaluate(() => {
+                const results = [];
+                // Lite version uses simple table structure
+                const rows = document.querySelectorAll('table tr');
+                rows.forEach(row => {
+                    const link = row.querySelector('a.result-link');
+                    if (link && link.href && link.href.startsWith('http')) {
+                        results.push(link.href);
+                    }
+                });
+
+                // Also try standard link selectors
+                document.querySelectorAll('a[href^="http"]').forEach(a => {
+                    const href = a.href;
+                    if (href && !href.includes('duckduckgo.com') && !results.includes(href)) {
+                        results.push(href);
+                    }
+                });
+
+                return results;
             });
+        };
 
-            // Also try standard link selectors
-            document.querySelectorAll('a[href^="http"]').forEach(a => {
-                const href = a.href;
-                if (href && !href.includes('duckduckgo.com') && !results.includes(href)) {
-                    results.push(href);
-                }
-            });
-
-            return results;
-        });
-
-        ddgLinks.slice(0, maxLinks).forEach(l => {
+        // Get initial results
+        let ddgLinks = await extractLinks();
+        ddgLinks.forEach(l => {
             if (!links.includes(l)) links.push(l);
         });
+
+        // DDG Lite uses form submission for pagination - try to get more pages
+        let pageNum = 1;
+        const maxPages = 3;
+
+        while (links.length < maxLinks && pageNum < maxPages) {
+            // Look for the "Next" button (form submit)
+            const nextButton = await page.$('input[type="submit"][value="Next"], input.nav-link[value*="Next"]');
+            if (!nextButton) {
+                console.log(`   📜 No more pages available after page ${pageNum}`);
+                break;
+            }
+
+            await humanize(page);
+            await nextButton.click();
+            await page.waitForLoadState('domcontentloaded');
+            await page.waitForTimeout(1000 + Math.random() * 500);
+
+            const newLinks = await extractLinks();
+            newLinks.forEach(l => {
+                if (!links.includes(l)) links.push(l);
+            });
+
+            pageNum++;
+            console.log(`   📜 Page ${pageNum}: Total ${links.length} links`);
+        }
 
         console.log(`   ✅ DDG Lite found ${links.length} results`);
     } catch (e) {
@@ -210,32 +282,63 @@ async function searchDuckDuckGoHTML(query, maxLinks, context) {
 
         await humanize(page);
 
-        const ddgLinks = await page.evaluate(() => {
-            const results = [];
-            // HTML version uses different selectors
-            document.querySelectorAll('.result__a, .result__url, a.result-link').forEach(a => {
-                const href = a.href;
-                if (href && href.startsWith('http') && !href.includes('duckduckgo.com')) {
-                    results.push(href);
-                }
-            });
-
-            // Fallback: any link that's not DDG
-            if (results.length === 0) {
-                document.querySelectorAll('a[href^="http"]').forEach(a => {
+        // Helper function to extract links
+        const extractLinks = async () => {
+            return await page.evaluate(() => {
+                const results = [];
+                // HTML version uses different selectors
+                document.querySelectorAll('.result__a, .result__url, a.result-link').forEach(a => {
                     const href = a.href;
-                    if (href && !href.includes('duckduckgo.com') && !results.includes(href)) {
+                    if (href && href.startsWith('http') && !href.includes('duckduckgo.com')) {
                         results.push(href);
                     }
                 });
-            }
 
-            return results;
-        });
+                // Fallback: any link that's not DDG
+                if (results.length === 0) {
+                    document.querySelectorAll('a[href^="http"]').forEach(a => {
+                        const href = a.href;
+                        if (href && !href.includes('duckduckgo.com') && !results.includes(href)) {
+                            results.push(href);
+                        }
+                    });
+                }
 
-        ddgLinks.slice(0, maxLinks).forEach(l => {
+                return results;
+            });
+        };
+
+        // Get initial results
+        let ddgLinks = await extractLinks();
+        ddgLinks.forEach(l => {
             if (!links.includes(l)) links.push(l);
         });
+
+        // DDG HTML version uses form-based pagination with "Next" button
+        let pageNum = 1;
+        const maxPages = 3;
+
+        while (links.length < maxLinks && pageNum < maxPages) {
+            // Look for the "Next" navigation link or button
+            const nextButton = await page.$('input.btn.btn--alt[value="Next"], .nav-link form input[type="submit"], input[value="Next"]');
+            if (!nextButton) {
+                console.log(`   📜 No more pages available after page ${pageNum}`);
+                break;
+            }
+
+            await humanize(page);
+            await nextButton.click();
+            await page.waitForLoadState('domcontentloaded');
+            await page.waitForTimeout(1000 + Math.random() * 500);
+
+            const newLinks = await extractLinks();
+            newLinks.forEach(l => {
+                if (!links.includes(l)) links.push(l);
+            });
+
+            pageNum++;
+            console.log(`   📜 Page ${pageNum}: Total ${links.length} links`);
+        }
 
         console.log(`   ✅ DDG HTML found ${links.length} results`);
     } catch (e) {
@@ -264,20 +367,57 @@ async function searchStartpage(query, maxLinks, context) {
         await page.waitForSelector('.w-gl__result', { timeout: 10000 }).catch(() => null);
         await humanize(page);
 
-        const spLinks = await page.evaluate(() => {
-            const results = [];
-            document.querySelectorAll('.w-gl__result a.w-gl__result-title, .result a').forEach(a => {
-                const href = a.href;
-                if (href && href.startsWith('http') && !href.includes('startpage.com')) {
-                    results.push(href);
-                }
+        // Helper function to extract links
+        const extractLinks = async () => {
+            return await page.evaluate(() => {
+                const results = [];
+                document.querySelectorAll('.w-gl__result a.w-gl__result-title, .result a').forEach(a => {
+                    const href = a.href;
+                    if (href && href.startsWith('http') && !href.includes('startpage.com')) {
+                        results.push(href);
+                    }
+                });
+                return results;
             });
-            return results;
-        });
+        };
 
-        spLinks.slice(0, maxLinks).forEach(l => {
+        // Get initial results
+        let spLinks = await extractLinks();
+        spLinks.forEach(l => {
             if (!links.includes(l)) links.push(l);
         });
+
+        // Scroll to load more results and try pagination
+        await scrollForMoreResults(page, 3, 1500);
+
+        // Extract links after scrolling
+        spLinks = await extractLinks();
+        spLinks.forEach(l => {
+            if (!links.includes(l)) links.push(l);
+        });
+
+        // Try to click "Next" page if available
+        let pageNum = 1;
+        const maxPages = 3;
+
+        while (links.length < maxLinks && pageNum < maxPages) {
+            const nextButton = await page.$('button.next, a.next, .pagination a[rel="next"], nav button:has-text("Next")');
+            if (!nextButton) break;
+
+            await humanize(page);
+            await nextButton.click();
+            await page.waitForLoadState('domcontentloaded');
+            await page.waitForTimeout(1500 + Math.random() * 500);
+            await page.waitForSelector('.w-gl__result', { timeout: 10000 }).catch(() => null);
+
+            const newLinks = await extractLinks();
+            newLinks.forEach(l => {
+                if (!links.includes(l)) links.push(l);
+            });
+
+            pageNum++;
+            console.log(`   📜 Page ${pageNum}: Total ${links.length} links`);
+        }
 
         console.log(`   ✅ Startpage found ${links.length} results`);
     } catch (e) {
@@ -306,22 +446,58 @@ async function searchBrave(query, maxLinks, context) {
         await page.waitForSelector('.snippet', { timeout: 10000 }).catch(() => null);
         await humanize(page);
 
-        const braveLinks = await page.evaluate(() => {
-            const results = [];
-            document.querySelectorAll('.snippet a, .result a, a[href^="http"]').forEach(a => {
-                const href = a.href;
-                if (href && href.startsWith('http') &&
-                    !href.includes('brave.com') &&
-                    !href.includes('search.brave')) {
-                    results.push(href);
-                }
+        // Helper function to extract links
+        const extractLinks = async () => {
+            return await page.evaluate(() => {
+                const results = [];
+                document.querySelectorAll('.snippet a, .result a, a[href^="http"]').forEach(a => {
+                    const href = a.href;
+                    if (href && href.startsWith('http') &&
+                        !href.includes('brave.com') &&
+                        !href.includes('search.brave')) {
+                        results.push(href);
+                    }
+                });
+                return [...new Set(results)];
             });
-            return [...new Set(results)];
-        });
+        };
 
-        braveLinks.slice(0, maxLinks).forEach(l => {
+        // Get initial results
+        let braveLinks = await extractLinks();
+        braveLinks.forEach(l => {
             if (!links.includes(l)) links.push(l);
         });
+
+        // Brave uses infinite scroll - scroll to load more
+        await scrollForMoreResults(page, 5, 1500);
+
+        // Extract links after scrolling
+        braveLinks = await extractLinks();
+        braveLinks.forEach(l => {
+            if (!links.includes(l)) links.push(l);
+        });
+
+        // Also try pagination buttons if they exist
+        let pageNum = 1;
+        const maxPages = 3;
+
+        while (links.length < maxLinks && pageNum < maxPages) {
+            const nextButton = await page.$('a[aria-label="Next page"], .pagination-next, button:has-text("Next")');
+            if (!nextButton) break;
+
+            await humanize(page);
+            await nextButton.click();
+            await page.waitForLoadState('domcontentloaded');
+            await page.waitForTimeout(1500 + Math.random() * 500);
+
+            const newLinks = await extractLinks();
+            newLinks.forEach(l => {
+                if (!links.includes(l)) links.push(l);
+            });
+
+            pageNum++;
+            console.log(`   📜 Page ${pageNum}: Total ${links.length} links`);
+        }
 
         console.log(`   ✅ Brave found ${links.length} results`);
     } catch (e) {
@@ -350,20 +526,57 @@ async function searchYandex(query, maxLinks, context) {
         await page.waitForSelector('.serp-item', { timeout: 10000 }).catch(() => null);
         await humanize(page);
 
-        const yandexLinks = await page.evaluate(() => {
-            const results = [];
-            document.querySelectorAll('.serp-item a, .organic__url, .link').forEach(a => {
-                const href = a.href;
-                if (href && href.startsWith('http') && !href.includes('yandex')) {
-                    results.push(href);
-                }
+        // Helper function to extract links
+        const extractLinks = async () => {
+            return await page.evaluate(() => {
+                const results = [];
+                document.querySelectorAll('.serp-item a, .organic__url, .link').forEach(a => {
+                    const href = a.href;
+                    if (href && href.startsWith('http') && !href.includes('yandex')) {
+                        results.push(href);
+                    }
+                });
+                return [...new Set(results)];
             });
-            return [...new Set(results)];
-        });
+        };
 
-        yandexLinks.slice(0, maxLinks).forEach(l => {
+        // Get initial results
+        let yandexLinks = await extractLinks();
+        yandexLinks.forEach(l => {
             if (!links.includes(l)) links.push(l);
         });
+
+        // Yandex uses "Load more" or pagination - scroll and try both
+        await scrollForMoreResults(page, 4, 1500);
+
+        // Extract links after scrolling
+        yandexLinks = await extractLinks();
+        yandexLinks.forEach(l => {
+            if (!links.includes(l)) links.push(l);
+        });
+
+        // Try pagination
+        let pageNum = 1;
+        const maxPages = 3;
+
+        while (links.length < maxLinks && pageNum < maxPages) {
+            const nextButton = await page.$('.pager__item_kind_next a, a.pager__item_kind_next, .more-button');
+            if (!nextButton) break;
+
+            await humanize(page);
+            await nextButton.click();
+            await page.waitForLoadState('domcontentloaded');
+            await page.waitForTimeout(1500 + Math.random() * 500);
+            await page.waitForSelector('.serp-item', { timeout: 10000 }).catch(() => null);
+
+            const newLinks = await extractLinks();
+            newLinks.forEach(l => {
+                if (!links.includes(l)) links.push(l);
+            });
+
+            pageNum++;
+            console.log(`   📜 Page ${pageNum}: Total ${links.length} links`);
+        }
 
         console.log(`   ✅ Yandex found ${links.length} results`);
     } catch (e) {
@@ -392,20 +605,57 @@ async function searchMojeek(query, maxLinks, context) {
         await page.waitForSelector('.results-standard', { timeout: 10000 }).catch(() => null);
         await humanize(page);
 
-        const mojeekLinks = await page.evaluate(() => {
-            const results = [];
-            document.querySelectorAll('.results-standard a, li.result a, a[href^="http"]').forEach(a => {
-                const href = a.href;
-                if (href && href.startsWith('http') && !href.includes('mojeek.com')) {
-                    results.push(href);
-                }
+        // Helper function to extract links
+        const extractLinks = async () => {
+            return await page.evaluate(() => {
+                const results = [];
+                document.querySelectorAll('.results-standard a, li.result a, a[href^="http"]').forEach(a => {
+                    const href = a.href;
+                    if (href && href.startsWith('http') && !href.includes('mojeek.com')) {
+                        results.push(href);
+                    }
+                });
+                return [...new Set(results)];
             });
-            return [...new Set(results)];
-        });
+        };
 
-        mojeekLinks.slice(0, maxLinks).forEach(l => {
+        // Get initial results
+        let mojeekLinks = await extractLinks();
+        mojeekLinks.forEach(l => {
             if (!links.includes(l)) links.push(l);
         });
+
+        // Scroll to load more results
+        await scrollForMoreResults(page, 3, 1000);
+
+        // Extract links after scrolling
+        mojeekLinks = await extractLinks();
+        mojeekLinks.forEach(l => {
+            if (!links.includes(l)) links.push(l);
+        });
+
+        // Mojeek uses traditional pagination
+        let pageNum = 1;
+        const maxPages = 3;
+
+        while (links.length < maxLinks && pageNum < maxPages) {
+            const nextButton = await page.$('a.next-page, a[rel="next"], .pagination a:has-text("Next"), .pagination a:has-text("»")');
+            if (!nextButton) break;
+
+            await humanize(page);
+            await nextButton.click();
+            await page.waitForLoadState('domcontentloaded');
+            await page.waitForTimeout(1500 + Math.random() * 500);
+            await page.waitForSelector('.results-standard', { timeout: 10000 }).catch(() => null);
+
+            const newLinks = await extractLinks();
+            newLinks.forEach(l => {
+                if (!links.includes(l)) links.push(l);
+            });
+
+            pageNum++;
+            console.log(`   📜 Page ${pageNum}: Total ${links.length} links`);
+        }
 
         console.log(`   ✅ Mojeek found ${links.length} results`);
     } catch (e) {
@@ -467,5 +717,6 @@ module.exports = {
     searchBrave,
     searchYandex,
     searchMojeek,
-    humanize
+    humanize,
+    scrollForMoreResults
 };
