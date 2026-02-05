@@ -5,6 +5,7 @@ const pdf = require('pdf-parse');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const PDFDocument = require('pdfkit');
 
 // --- CONFIGURATION ---
 const QUERY = process.env.INPUT_QUERY || "Artificial Intelligence Safety";
@@ -23,14 +24,155 @@ function countWords(text) {
 
 function formatOutput(type, title, url, content) {
     const cleanText = content.replace(/\s\s+/g, ' ').trim();
-    return `TYPE: ${type}\nTITLE: ${title}\nURL: ${url}\nDATE: ${new Date().toISOString()}\nWORDS: ${countWords(cleanText)}\n\n${cleanText}`;
+    // Return structured data for PDF generation
+    return {
+        type: type,
+        title: title || 'Untitled Document',
+        url: url,
+        date: new Date().toISOString(),
+        wordCount: countWords(cleanText),
+        content: cleanText
+    };
 }
 
-function saveVolume(volNum, content, query) {
-    const filename = `Volume_${volNum}_(${query.replace(/[^a-z0-9]/gi, '_')}).txt`;
+function savePDFVolume(volNum, sources, query) {
+    const filename = `Volume_${volNum}_(${query.replace(/[^a-z0-9]/gi, '_')}).pdf`;
     const filePath = path.join(OUTPUT_DIR, filename);
-    fs.writeFileSync(filePath, content);
-    console.log(`\n    💾 Saved ${filename} (${Math.round(content.length / 1024)} KB)`);
+
+    // Create a new PDF document
+    const doc = new PDFDocument({
+        size: 'A4',
+        margins: { top: 50, bottom: 50, left: 50, right: 50 },
+        bufferPages: true
+    });
+
+    // Pipe to file
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    // --- TITLE PAGE ---
+    doc.fontSize(28).font('Helvetica-Bold');
+    doc.text('RESEARCH COMPILATION', { align: 'center' });
+    doc.moveDown(0.5);
+
+    doc.fontSize(18).font('Helvetica');
+    doc.text(`Volume ${volNum}`, { align: 'center' });
+    doc.moveDown(0.3);
+
+    doc.fontSize(14).font('Helvetica-Oblique');
+    doc.text(`Topic: "${query}"`, { align: 'center' });
+    doc.moveDown(0.5);
+
+    doc.fontSize(12).font('Helvetica');
+    doc.text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
+    doc.text(`Total Sources: ${sources.length}`, { align: 'center' });
+
+    // Divider line
+    doc.moveDown(1);
+    doc.strokeColor('#333333').lineWidth(2);
+    doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+
+    // --- TABLE OF CONTENTS ---
+    doc.addPage();
+    doc.fontSize(20).font('Helvetica-Bold');
+    doc.text('TABLE OF CONTENTS', { align: 'center' });
+    doc.moveDown(1);
+
+    doc.fontSize(11).font('Helvetica');
+    sources.forEach((source, idx) => {
+        const truncTitle = source.title.length > 60
+            ? source.title.substring(0, 57) + '...'
+            : source.title;
+        doc.text(`${idx + 1}. [${source.type}] ${truncTitle}`, {
+            continued: false,
+            link: null
+        });
+        doc.moveDown(0.3);
+    });
+
+    // --- INDIVIDUAL SOURCES ---
+    sources.forEach((source, idx) => {
+        // Start new page for each source
+        doc.addPage();
+
+        // ═══════════════════════════════════════════════════════════
+        // SOURCE HEADER
+        // ═══════════════════════════════════════════════════════════
+        doc.strokeColor('#2563eb').lineWidth(3);
+        doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+        doc.moveDown(0.5);
+
+        // Source number badge
+        doc.fontSize(14).font('Helvetica-Bold').fillColor('#2563eb');
+        doc.text(`📄 SOURCE ${idx + 1} OF ${sources.length}`, { align: 'left' });
+        doc.moveDown(0.3);
+
+        // Title
+        doc.fontSize(16).font('Helvetica-Bold').fillColor('#000000');
+        doc.text(source.title, { align: 'left' });
+        doc.moveDown(0.5);
+
+        // ───────────────────────────────────────────────────────────
+        // METADATA BLOCK
+        // ───────────────────────────────────────────────────────────
+        doc.strokeColor('#cccccc').lineWidth(1);
+        doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+        doc.moveDown(0.4);
+
+        doc.fontSize(10).font('Helvetica').fillColor('#555555');
+        doc.text(`Type: ${source.type === 'PDF' ? '📑 PDF Document' : '🌐 Web Page'}`);
+        doc.text(`URL: ${source.url}`, { link: source.url, underline: true });
+        doc.text(`Date Extracted: ${source.date}`);
+        doc.text(`Word Count: ${source.wordCount.toLocaleString()} words`);
+        doc.moveDown(0.4);
+
+        doc.strokeColor('#cccccc').lineWidth(1);
+        doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+        doc.moveDown(0.8);
+
+        // ───────────────────────────────────────────────────────────
+        // CONTENT BODY
+        // ───────────────────────────────────────────────────────────
+        doc.fontSize(11).font('Times-Roman').fillColor('#000000');
+
+        // Split content into paragraphs and add them
+        const paragraphs = source.content.split(/\n+/).filter(p => p.trim().length > 0);
+        paragraphs.forEach(para => {
+            // Check if we need a new page
+            if (doc.y > 700) {
+                doc.addPage();
+                // Add continuation header
+                doc.fontSize(9).font('Helvetica-Oblique').fillColor('#888888');
+                doc.text(`[Continued - Source ${idx + 1}: ${source.title.substring(0, 40)}...]`, { align: 'right' });
+                doc.moveDown(0.5);
+                doc.fontSize(11).font('Times-Roman').fillColor('#000000');
+            }
+            doc.text(para.trim(), { align: 'justify', lineGap: 2 });
+            doc.moveDown(0.5);
+        });
+
+        // ═══════════════════════════════════════════════════════════
+        // SOURCE FOOTER
+        // ═══════════════════════════════════════════════════════════
+        doc.moveDown(1);
+        doc.strokeColor('#2563eb').lineWidth(2);
+        doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+        doc.moveDown(0.3);
+        doc.fontSize(9).font('Helvetica-Oblique').fillColor('#666666');
+        doc.text(`▼ END OF SOURCE ${idx + 1}`, { align: 'center' });
+    });
+
+    // Finalize PDF
+    doc.end();
+
+    // Wait for stream to finish
+    return new Promise((resolve) => {
+        stream.on('finish', () => {
+            const stats = fs.statSync(filePath);
+            console.log(`\n    💾 Saved ${filename} (${Math.round(stats.size / 1024)} KB)`);
+            resolve();
+        });
+    });
 }
 
 // --- WIKIPEDIA API SEARCH (Works from any IP) ---
@@ -374,7 +516,7 @@ async function processLink(link, browser, contentType) {
     let processedCount = 0;
     let successCount = 0;
     let currentVolume = 1;
-    let currentBuffer = "";
+    let currentSources = [];
 
     const CONCURRENCY = 3;
 
@@ -386,22 +528,22 @@ async function processLink(link, browser, contentType) {
         for (const res of results) {
             processedCount++;
             if (res) {
-                currentBuffer += res + "\n\n" + "=".repeat(60) + "\n\n";
+                currentSources.push(res);
                 successCount++;
             }
         }
 
         process.stdout.write(`\r⚙️  Processed: ${processedCount}/${linksArray.length} (Success: ${successCount})`);
 
-        if (successCount > 0 && successCount % DOCS_PER_FILE === 0 && currentBuffer.length > 0) {
-            saveVolume(currentVolume, currentBuffer, QUERY);
+        if (successCount > 0 && successCount % DOCS_PER_FILE === 0 && currentSources.length > 0) {
+            await savePDFVolume(currentVolume, currentSources, QUERY);
             currentVolume++;
-            currentBuffer = "";
+            currentSources = [];
         }
     }
 
-    if (currentBuffer.length > 0) {
-        saveVolume(currentVolume, currentBuffer, QUERY);
+    if (currentSources.length > 0) {
+        await savePDFVolume(currentVolume, currentSources, QUERY);
     }
 
     await browser.close();
